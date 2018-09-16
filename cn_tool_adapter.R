@@ -1,4 +1,6 @@
-
+setwd("C:/Users/bbece/Documents/Git-Projects/Git-Research-Projects/cnfe-library")
+source("./class_definitions.R")
+library(dplyr)
 
 retrieve_legacy_facets_objects <- function(){
   #
@@ -23,6 +25,9 @@ retrieve_legacy_facets_objects <- function(){
   ref_sample <- substr(ref_match, 2, nchar(ref_match) - 1)
   xxNew <- readRDS(paste0("./resources/xxJoinsegNew_r", normal_ref, ".rds"))
   facets_dir <- paste0("output/", "FACETS_Reference_", ref_sample, "_8_2_18_1/")
+  
+  facetsCopyNumberResults <- list()
+  facetsCopyNumberResults[[ref_sample]] <- new("ReferencedFacetsOutputMap", reference=ref_sample)
   
   #dir.create(file.path(facets_dir), showWarnings = FALSE)
   for(fileList.index in seq(1, length(fileList))){
@@ -64,6 +69,7 @@ retrieve_legacy_facets_objects <- function(){
         return()
       }
       
+      addRatio(map=facetsCopyNumberResults[[ref_sample]], target=target_sample, ratio=saveSnps)
       #write.table(saveSnps, file = xxOutputFilename, quote=TRUE, sep = "\t", row.names = FALSE  )
       print(paste0("Wrote SNPS to: ", xxOutputFilename))
     }, silent = TRUE)
@@ -75,25 +81,44 @@ retrieve_legacy_facets_objects <- function(){
       fitFilename <- paste0(res_dir, "/facetsG5Fit_", normal_ref, "_", fileList.index, ".rds")
       fit <- readRDS(fitFilename)
       saveFit <- fit$cncf
+      
+      addSegments(map=facetsCopyNumberResults[[ref_sample]], target=target_sample, segments=saveFit)
       #write.table(saveFit, file = fitOutputFilename, quote=TRUE, sep = "\t", row.names = FALSE  )
       print(paste0("Wrote FIT to: ", fitOutputFilename))
     }, silent = TRUE)
   }
   
-  
+  return(facetsCopyNumberResults)
   
 }
-
-retrieve_legacy_facets_objects()
-test_facets_adapter <- function(){
-  
-  facets_adapter()
-}
-test_facets_adapter()
 
 # Input: Object containing a list of FACETS objects (facetsG5XX, facetsG5OO, facetsG5Fit) mapped to sample ID
 # Ouptput: Datastructure that CNprep can resolve
-facets_adapter <- function(facetsObjectList){
-  
-  
+facets_adapter <- function(facetsCopyNumberResults){
+  standardCopyNumberMapList <- lapply(names(facetsCopyNumberResults), function(reference){
+    standardCopyNumberMap <- new("ReferencedCopyNumberMap", reference=reference)  
+    invisible(sapply(ls(facetsCopyNumberResults[[reference]]@map), function(target){
+      facetsProfile <- facetsCopyNumberResults[[reference]]@map[[target]]
+      
+      ratio <- select(facetsProfile@xx, chrom, maploc, cnlr)
+      colnames(ratio) <- c("chr", "start", "cnlr")
+      ratio$end <- ratio$start
+      ratio <- select(ratio, chr, start, end, cnlr)
+      
+      segments <- select(facetsProfile@fit, chrom, start, end, cnlr.median)
+      colnames(segments) <- c("chr", "start", "end", "cnlr")
+      
+      profile <- new("CopyNumberProfile", ratio=ratio, segments=segments)
+      addEntry(map=standardCopyNumberMap, target=target, profile=profile)  
+    }))
+    return(standardCopyNumberMap)
+  })
+  names(standardCopyNumberMapList) <- names(facetsCopyNumberResults)
+  return(standardCopyNumberMapList)
 }
+
+test_facets_adapter <- function(){
+  facetsCopyNumberResults <- retrieve_legacy_facets_objects()
+  standardCopyNumberMapList <- facets_adapter(facetsCopyNumberResults)
+}
+test_facets_adapter()
