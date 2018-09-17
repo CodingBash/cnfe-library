@@ -1,16 +1,19 @@
-cnprep_process <- function(){
-  normal_samples <- NA # List of strings containing IDs of normal diploid sequences
-  reference <- NA # ID of normal reference
+cnprep_process <- function(standardCopyNumberMap){
+  normal_samples <- retrieveTargetSampleList(standardCopyNumberMap, class="N")
+  reference <- standardCopyNumberMap@reference
   cytobands <- NA # Retrieve cytobands
-  chromosome_sizes <- NA # Retrieve chromosome sizes (preferably dynamically)
+  chromosome_sizes <- NA # Retrieve chromosome sizes (preferably dynamically) - user should send in genome (i.e. hg19)
   
-  normal_segments <- NA # Segment data of all IDs in normal_samples
+  normal_segments <- retrieveTargetSampleListSegments(standardCopyNumberMap, class="N")
   
-  target_samples <- NA # List of string containing IDs of target diploid sequences
+  target_samples <- retrieveTargetSampleList(standardCopyNumberMap, class=c("T", "F", "M"))
   
   for(target_samples.i in seq_along(target_samples)){
-    segment_data <- NA # segment data for sample.i
-    ratio_data <- NA # ratio data for sample.i
+    sample <- target_samples[target_samples.i]
+    segment_data <- standardCopyNumberMap@map[[sample]]@segments
+    ratio_data <- standardCopyNumberMap@map[[sample]]@ratio
+    
+    # TODO: Get seginput, ratinput
     
     # . . .
     

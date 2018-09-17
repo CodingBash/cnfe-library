@@ -1,3 +1,5 @@
+
+
 defineGenerics <- function(){
   setGeneric("addEntry", function(map, target, profile) {
     standardGeneric("addEntry")
@@ -11,6 +13,16 @@ defineGenerics <- function(){
   setGeneric("removeEntry", function(map, target) {
     standardGeneric("removeEntry")
   })
+  setGeneric("retrieveTargetSampleList", function(map) {
+    standardGeneric("retrieveTargetSampleList")
+  })
+  setGeneric("retrieveTargetSampleList", function(map, class) {
+    standardGeneric("retrieveTargetSampleList")
+  })
+  setGeneric("retrieveTargetSampleListSegments", function(map, class) {
+    standardGeneric("retrieveTargetSampleListSegments")
+  })
+  
 }
 
 defineFacetsClass <- function(){
@@ -47,6 +59,7 @@ defineFacetsClass <- function(){
 defineStandardClass <- function(){
   # TODO: Add validation on BED data.frame
   
+  
   setClass("CopyNumberProfile", representation(segments="data.frame", ratio="data.frame"))
   setClass("ReferencedCopyNumberMap", representation(map="environment", reference="character"),
            prototype(map=new.env(), reference=NA_character_))
@@ -76,6 +89,32 @@ defineStandardClass <- function(){
   setMethod("removeEntry", signature(map = "ReferencedCopyNumberMap", target="character"), function(map, target){ 
     remove(list=c(target), envir=map@map)
   })
+  
+  setMethod("retrieveTargetSampleList", signature(map = "ReferencedCopyNumberMap"), function(map){ 
+    return(ls(map@map))
+  })
+  
+  setMethod("retrieveTargetSampleList", signature(map = "ReferencedCopyNumberMap", class = "character"), function(map, class){ 
+    targetSampleList <- retrieveTargetSampleList(map)
+    matches <- c()
+    if(length(class) > 1){
+      matches <- unlist(lapply(class, function(single_class){
+        targetSampleList[str_detect(targetSampleList, paste0(".[", single_class, "]"))]
+      }))
+    } else {
+      matches <- targetSampleList[str_detect(targetSampleList, paste0(".[", class, "]"))]
+    }
+    return(matches)
+  })
+  
+  setMethod("retrieveTargetSampleListSegments", signature(map = "ReferencedCopyNumberMap", class = "character"), function(map, class){ 
+    targetSampleList <- retrieveTargetSampleList(map, class)
+    segmentList <- lapply(targetSampleList, function(sample){
+      return(map@map[[sample]]@segments)
+    })
+    targetSampleSegments <- do.call(rbind, segmentList)
+  })
+  
 }
 
 defineGenerics()
