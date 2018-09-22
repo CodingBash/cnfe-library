@@ -98,6 +98,24 @@ retrieve_legacy_facets_objects <- function(){
 # Input: Object containing a list of FACETS objects (facetsG5XX, facetsG5OO, facetsG5Fit) mapped to sample ID
 # Ouptput: Datastructure that CNprep can resolve
 facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
+  generateProbes <- function(fit){
+    probes.df <- data.frame(stringsAsFactors = FALSE)
+    for(fit.index in seq(1, nrow(fit))){
+      probes.chrom <- fit[fit.index, ]$chrom
+      probes.start <- 0
+      probes.end <- 0
+      for(i in seq(1, fit.index)){
+        if(i != fit.index){
+          probes.start <- probes.start + fit[i, ]$num.mark
+        }
+        probes.end <- probes.end + fit[i, ]$num.mark
+      }
+      probes.start <- probes.start + 1
+      probes.df.row <- data.frame(chrom = probes.chrom, start = probes.start, end = probes.end)
+      probes.df <- rbind(probes.df, probes.df.row)
+    }
+    return(probes.df)
+  }
   standardCopyNumberMapList <- lapply(names(facetsCopyNumberResults), function(reference){
     standardCopyNumberMap <- new("ReferencedCopyNumberMap", reference=reference, chromosomeSizes=chromosomeSizes)  
     sapply(ls(facetsCopyNumberResults[[reference]]@map), function(target){
@@ -114,7 +132,11 @@ facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
       
       addSegments(map=standardCopyNumberMap, target=target, segments=segments, isAbsolute=FALSE)
       standardCopyNumberMap@map[[target]]@chromosomalRatio=ratio # TODO: Figure out solution for genomic conversion
-      solveProbes(map=standardCopyNumberMap, target=target)
+      
+      
+      # solveProbes(map=standardCopyNumberMap, target=target) # TODO: This solves probes based on ratio/segments matching
+      standardCopyNumberMap@map[[target]]@probes <- generateProbes(facetsProfile@fit) # TODO: This solves probes based on facets num.mark (shown to be inaccurate)
+      
     })
     return(standardCopyNumberMap)
   })
