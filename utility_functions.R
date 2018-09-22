@@ -61,7 +61,7 @@ genomicConversionForSingleEntry <- function(chrom, start, end, chromosomeSizes, 
 #
 genomicConversion <- function(inputSegments, chromosomeSizes, chromosomeToAbsolute){
   operator <- if(chromosomeToAbsolute == TRUE) match.fun(FUN = "+") else match.fun(FUN = "-")
-  
+
   for(row.index in seq(1, nrow(inputSegments))){
     # Pre-process chromosome input
     chrom <- inputSegments[row.index, ][[1]]

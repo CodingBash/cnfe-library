@@ -8,11 +8,17 @@ defineGenerics <- function(){
   setGeneric("addRatio", function(map, target, ratio) {
     standardGeneric("addRatio")
   })
-  setGeneric("addSegments", function(map, target, segments) {
-    standardGeneric("addSegments")
+  setGeneric("addRatio", function(map, target, ratio, isAbsolute) {
+    standardGeneric("addRatio")
   })
   setGeneric("addRatio", function(map, target, ratio, chromosomeSizes, isAbsolute) {
     standardGeneric("addRatio")
+  })
+  setGeneric("addSegments", function(map, target, segments) {
+    standardGeneric("addSegments")
+  })
+  setGeneric("addSegments", function(map, target, segments, isAbsolute) {
+    standardGeneric("addSegments")
   })
   setGeneric("addSegments", function(map, target, segments, chromosomeSizes, isAbsolute) {
     standardGeneric("addSegments")
@@ -76,23 +82,16 @@ defineStandardClass <- function(){
   })
   
   setMethod("addRatio", signature(map = "ReferencedCopyNumberMap", target="character", ratio="data.frame", chromosomeSizes="data.frame", isAbsolute="logical"), function(map, target, ratio, chromosomeSizes, isAbsolute){ 
-    if(missing(chromosomeSizes)){
-      if(!is.null(map@chromosomeSizes)){
-        chromosomeSizes = map@chromosomeSizes
-      } else {
-        stop("Add chromosomeSizes before adding ratios") # TODO: Bad design: should not require chromosomeSizes to be added beforehand
-      }
-    } 
-    
     chromosomalRatio <- NA
     absoluteRatio <- NA
     
+    
     if(isAbsolute == TRUE){
       absoluteRatio <- ratio
-      chromosomalRatio <- genomicConversion(absoluteRatio, chromosomeSizes, chromosomeToAbsolute = False)
+      chromosomalRatio <- genomicConversion(absoluteRatio, chromosomeSizes, chromosomeToAbsolute = FALSE)
     } else {
       chromosomalRatio <- ratio
-      absoluteRatio <- genomicConversion(chromosomalRatio, chromosomeSizes, chromosomeToAbsolute = True)
+      absoluteRatio <- genomicConversion(chromosomalRatio, chromosomeSizes, chromosomeToAbsolute = TRUE)
     }
     
     if(is.null(map@map[[target]])) {
@@ -106,24 +105,26 @@ defineStandardClass <- function(){
     }
   })
   
+  setMethod("addRatio", signature(map = "ReferencedCopyNumberMap", target="character", ratio="data.frame", isAbsolute="logical"), function(map, target, ratio, isAbsolute){ 
+    if(!is.null(map@chromosomeSizes)){
+      chromosomeSizes = map@chromosomeSizes
+      addRatio(map = map, target = target, ratio = ratio, chromosomeSizes = chromosomeSizes, isAbsolute = isAbsolute)
+    } else {
+      stop("Add chromosomeSizes before adding ratios") # TODO: Bad design: should not require chromosomeSizes to be added beforehand
+    }
+  })
+  
+  
   setMethod("addSegments", signature(map = "ReferencedCopyNumberMap", target="character", segments="data.frame", chromosomeSizes="data.frame", isAbsolute="logical"), function(map, target, segments, chromosomeSizes, isAbsolute){ 
-    if(missing(chromosomeSizes)){
-      if(!is.null(map@chromosomeSizes)){
-        chromosomeSizes = map@chromosomeSizes
-      } else {
-        stop("Add chromosomeSizes before adding segments") # TODO: Bad design: should not require chromosomeSizes to be added beforehand
-      }
-    } 
-    
     chromosomalSegments <- NA
     absoluteSegments <- NA
     
     if(isAbsolute == TRUE){
       absoluteSegments <- segments
-      chromosomalSegments <- genomicConversion(absoluteSegments, chromosomeSizes, chromosomeToAbsolute = False)
+      chromosomalSegments <- genomicConversion(absoluteSegments, chromosomeSizes, chromosomeToAbsolute = FALSE)
     } else {
       chromosomalSegments <- segments
-      absoluteSegments <- genomicConversion(chromosomalSegments, chromosomeSizes, chromosomeToAbsolute = True)
+      absoluteSegments <- genomicConversion(chromosomalSegments, chromosomeSizes, chromosomeToAbsolute = TRUE)
     }
     
     if(is.null(map@map[[target]])) {
@@ -134,6 +135,15 @@ defineStandardClass <- function(){
       profile@chromosomalSegments <- chromosomalSegments
       profile@absoluteSegments <- absoluteSegments
       map@map[[target]] <- profile
+    }
+  })
+  
+  setMethod("addSegments", signature(map = "ReferencedCopyNumberMap", target="character", segments="data.frame", isAbsolute="logical"), function(map, target, segments, isAbsolute){ 
+    if(!is.null(map@chromosomeSizes)){
+      chromosomeSizes = map@chromosomeSizes
+      addSegments(map = map, target = target, segments = segments, chromosomeSizes = chromosomeSizes, isAbsolute = isAbsolute)
+    } else {
+      stop("Add chromosomeSizes before adding segments") # TODO: Bad design: should not require chromosomeSizes to be added beforehand - need verification of chromosomeSizes when creating object
     }
   })
   
@@ -170,6 +180,7 @@ print("Defining FACETS interface class")
 defineFacetsClass()
 print("Defining standard data class")
 defineStandardClass()
+print("Complete")
 
 ################################################################################################################################################
 

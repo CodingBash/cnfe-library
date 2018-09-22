@@ -3,8 +3,8 @@ source("./class_definitions.R")
 source("https://bioconductor.org/biocLite.R")
 biocLite("BSgenome.Hsapiens.UCSC.hg19")
 library(BSgenome.Hsapiens.UCSC.hg19)
-library(dplyr)
-library(stringr)
+library(tidyverse)
+
 retrieve_legacy_facets_objects <- function(){
   #
   # Take directory of FACETS objects and write to tsv
@@ -100,7 +100,8 @@ retrieve_legacy_facets_objects <- function(){
 facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
   standardCopyNumberMapList <- lapply(names(facetsCopyNumberResults), function(reference){
     standardCopyNumberMap <- new("ReferencedCopyNumberMap", reference=reference, chromosomeSizes=chromosomeSizes)  
-    invisible(sapply(ls(facetsCopyNumberResults[[reference]]@map), function(target){
+    sapply(ls(facetsCopyNumberResults[[reference]]@map), function(target){
+      print(target)
       facetsProfile <- facetsCopyNumberResults[[reference]]@map[[target]]
       
       ratio <- select(facetsProfile@xx, chrom, maploc, cnlr)
@@ -111,9 +112,12 @@ facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
       segments <- select(facetsProfile@fit, chrom, start, end, cnlr.median)
       colnames(segments) <- c("chr", "start", "end", "cnlr")
       
+      print("adding")
       addSegments(map=standardCopyNumberMap, target=target, segments=segments, isAbsolute=FALSE)
-      addRatio(map=standardCopyNumberMap, target=target, segments=ratio, isAbsolute=FALSE)
-    }))
+      print("middle")
+      addRatio(map=standardCopyNumberMap, target=target, ratio=ratio, isAbsolute=FALSE)
+      print("added")
+    })
     return(standardCopyNumberMap)
   })
   names(standardCopyNumberMapList) <- names(facetsCopyNumberResults)
