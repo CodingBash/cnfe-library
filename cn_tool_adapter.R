@@ -114,6 +114,7 @@ facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
       
       addSegments(map=standardCopyNumberMap, target=target, segments=segments, isAbsolute=FALSE)
       standardCopyNumberMap@map[[target]]@chromosomalRatio=ratio # TODO: Figure out solution for genomic conversion
+      solveProbes(map=standardCopyNumberMap, target=target)
     })
     return(standardCopyNumberMap)
   })

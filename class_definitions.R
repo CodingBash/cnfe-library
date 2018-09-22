@@ -26,6 +26,9 @@ defineGenerics <- function(){
   setGeneric("removeEntry", function(map, target) {
     standardGeneric("removeEntry")
   })
+  setGeneric("solveProbes", function(map, target) {
+    standardGeneric("solveProbes")
+  })
   setGeneric("retrieveTargetSampleList", function(map) {
     standardGeneric("retrieveTargetSampleList")
   })
@@ -70,7 +73,7 @@ defineFacetsClass <- function(){
 } 
 defineStandardClass <- function(){
   # TODO: Add validation on BED data.frame
-  setClass("CopyNumberProfile", representation(chromosomalSegments="data.frame", chromosomalRatio="data.frame", absoluteSegments="data.frame", absoluteRatio="data.frame"))
+  setClass("CopyNumberProfile", representation(probes="data.frame", chromosomalSegments="data.frame", chromosomalRatio="data.frame", absoluteSegments="data.frame", absoluteRatio="data.frame"))
   setClass("ReferencedCopyNumberMap", representation(map="environment", reference="character", chromosomeSizes="data.frame"),
            prototype(map=new.env(), reference=NA_character_))
   setMethod("addEntry", signature(map = "ReferencedCopyNumberMap", target="character", profile="CopyNumberProfile"), function(map, target, profile){ 
@@ -145,6 +148,26 @@ defineStandardClass <- function(){
     } else {
       stop("Add chromosomeSizes before adding segments") # TODO: Bad design: should not require chromosomeSizes to be added beforehand - need verification of chromosomeSizes when creating object
     }
+  })
+  
+  setMethod("solveProbes", signature(map = "ReferencedCopyNumberMap", target="character"), function(map, target){ 
+    # TODO: Either both segments and ratio are chromosomal or absolute, but not different - add support for absolute units
+    segments <- map@map[[target]]@chromosomalSegments
+    ratio <-  map@map[[target]]@chromosomalRatio
+      
+    if(is.na(segments) || is.na(ratio)){
+      stop("Segments and ratio must be set before solving probes")
+    } 
+    
+    probes.df <- do.call(rbind, sapply(seq(1, nrow(segments)), function(segments.index){
+      probes.chrom <- segments[segments.index, 1]
+      probes.start <- which(ratio[[2]] == segments[segments.index, 2])
+      probes.end <- which(ratio[[3]] == segments[segments.index, 3])
+      probes.row <- data.frame(chrom=probes.chrom, start=probes.start, end=probes.end, stringsAsFactors = FALSE)
+      return(probes.row)
+    }))
+    
+    map@map[[target]]@probes <- probes.df
   })
   
   setMethod("retrieveTargetSampleList", signature(map = "ReferencedCopyNumberMap"), function(map){ 
