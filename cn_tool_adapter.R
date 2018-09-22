@@ -101,7 +101,7 @@ facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
   standardCopyNumberMapList <- lapply(names(facetsCopyNumberResults), function(reference){
     standardCopyNumberMap <- new("ReferencedCopyNumberMap", reference=reference, chromosomeSizes=chromosomeSizes)  
     sapply(ls(facetsCopyNumberResults[[reference]]@map), function(target){
-      print(target)
+      print(paste0("Converting target = ", target))
       facetsProfile <- facetsCopyNumberResults[[reference]]@map[[target]]
       
       ratio <- select(facetsProfile@xx, chrom, maploc, cnlr)
@@ -112,11 +112,8 @@ facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
       segments <- select(facetsProfile@fit, chrom, start, end, cnlr.median)
       colnames(segments) <- c("chr", "start", "end", "cnlr")
       
-      print("adding")
       addSegments(map=standardCopyNumberMap, target=target, segments=segments, isAbsolute=FALSE)
-      print("middle")
-      addRatio(map=standardCopyNumberMap, target=target, ratio=ratio, isAbsolute=FALSE)
-      print("added")
+      standardCopyNumberMap@map[[target]]@chromosomalRatio=ratio # TODO: Figure out solution for genomic conversion
     })
     return(standardCopyNumberMap)
   })
