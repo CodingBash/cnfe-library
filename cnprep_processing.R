@@ -4,6 +4,7 @@
 source("https://bioconductor.org/biocLite.R")
 biocLite("BSgenome.Hsapiens.UCSC.hg19")
 library(BSgenome.Hsapiens.UCSC.hg19)
+library(CNprep)
 
 cnprep_process <- function(standardCopyNumberMap){
   normal_samples <- retrieveTargetSampleList(standardCopyNumberMap, class="N") # May not even need this
@@ -16,10 +17,22 @@ cnprep_process <- function(standardCopyNumberMap){
     sample <- target_samples[target_samples.i]
     standardCopyNumberProfile <- standardCopyNumberMap@map[[sample]]
     
+    # TODO: Create one huge seginput (I have code somewhere on drug-response-prediction)
+    # TODO: Allow users to choose between parallel and syncrynous CNprep run -> for fault continuation if one of samples are bad.
+    # TODO: Among whole package, need to focus on exception handling.
+    
     seginput <- transformSegmentsForCNprep(standardCopyNumberProfile, sample)
     ratinput <- transformRatioForCNprep(standardCopyNumberProfile, sample)
     # TODO: Get seginput, ratinput
     
+    try({
+      # TODO: Add parameters as function inputs - allow all parameters
+      segtable <- runCNpreprocessing(seginput = seginput, ratinput = ratinput, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial) #TODO: Is there a distrib="Grid"?
+      print(paste("Produced segtable for sample", sample))
+      
+      write.table(segtable, paste("./output/", output_dir,"/", sample, "_segtable.tsv", sep = ""), row.names = F, sep = "\t", quote = FALSE)
+      print(paste("Wrote output for sample", sample))
+    }, silent = TRUE)
     # . . a
     
   }
@@ -61,6 +74,19 @@ transformRatioForCNprep <- function(standardCopyNumberProfile, sample){
   ratinput <- data.frame(ratio[[4]])
   names(ratinput) <- c(sample)
   return(ratinput)
+}
+
+#
+# Wrapper function for CNprep::CNpreprocessing()
+#
+runCNpreprocessing <- function(seginput, ratinput, norminput,
+                               blsize=50, minjoin=0.25, cweight=0.4, bstimes=50,
+                               chromrange=1:22, distrib="Rparallel", njobs=4, modelNames="E", ntrial= 10){
+  segtable<-CNpreprocessing(segall=seginput,ratall=ratinput,"ID","start","end",
+                            chromcol="chrom",bpstartcol="chrom.pos.start",bpendcol="chrom.pos.end",blsize=blsize,
+                            minjoin=minjoin,cweight=cweight,bstimes=bstimes,chromrange=chromrange,distrib=distrib,njobs=njobs,
+                            modelNames=modelNames,normalength=norminput[,1],normalmedian=norminput[,2], ntrial=ntrial)
+  return(segtable)
 }
 
 test_cnprep_process <- function(){
