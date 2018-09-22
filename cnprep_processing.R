@@ -33,13 +33,14 @@ cnprep_process <- function(standardCopyNumberMap){
 transformSegmentsForCNprep <- function(standardCopyNumberProfile, sample){
   seginput <- data.frame(stringsAsFactors = FALSE)
   chromosomalSegments <- standardCopyNumberProfile@chromosomalSegments
-  absoluteSegments <- standardCopyNumberProfile@chromosomalSegments 
+  absoluteSegments <- standardCopyNumberProfile@absoluteSegments 
     
   # Iterate through each segment
   for(segment_data.index in seq(1, nrow(standardCopyNumberProfile@chromosomalSegments))){
      
     # TODO: Support probes by including in adapter and object design (need to really consider object design (need to improve S4 class skills))   
     
+    # TODO: Support for combinatorial missings of standardCopyNumberProfile object - some users might not have all data available - only require what is necessary (through S4 object validation)
     seginput.entry <- data.frame(ID = sample, seg.median = absoluteSegments[[4]], 
                                  chrom = absoluteSegments[[1]], chrom.pos.start = chromosomalSegments[[2]], 
                                  chrom.pos.end = chromosomalSegments[[3]], abs.pos.start = absoluteSegments[[2]],
@@ -52,8 +53,8 @@ transformSegmentsForCNprep <- function(standardCopyNumberProfile, sample){
 
 transformRatioForCNprep <- function(standardCopyNumberProfile, sample){
   ratio <- NA
-  if(nrow(standardCopyNumberProfile@absoluteRatio == 0)){
-    ratio <- standardCopyNumberProfile@chromosomeRatio    
+  if(nrow(standardCopyNumberProfile@absoluteRatio) == 0){
+    ratio <- standardCopyNumberProfile@chromosomalRatio    
   } else {
     ratio <- standardCopyNumberProfile@absoluteRatio
   }
