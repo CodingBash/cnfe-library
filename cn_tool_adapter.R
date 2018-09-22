@@ -1,7 +1,10 @@
 setwd("C:/Users/bbece/Documents/Git-Projects/Git-Research-Projects/cnfe-library")
 source("./class_definitions.R")
+source("https://bioconductor.org/biocLite.R")
+biocLite("BSgenome.Hsapiens.UCSC.hg19")
+library(BSgenome.Hsapiens.UCSC.hg19)
 library(dplyr)
-
+library(stringr)
 retrieve_legacy_facets_objects <- function(){
   #
   # Take directory of FACETS objects and write to tsv
@@ -94,9 +97,9 @@ retrieve_legacy_facets_objects <- function(){
 
 # Input: Object containing a list of FACETS objects (facetsG5XX, facetsG5OO, facetsG5Fit) mapped to sample ID
 # Ouptput: Datastructure that CNprep can resolve
-facets_adapter <- function(facetsCopyNumberResults){
+facets_adapter <- function(facetsCopyNumberResults, chromosomeSizes){
   standardCopyNumberMapList <- lapply(names(facetsCopyNumberResults), function(reference){
-    standardCopyNumberMap <- new("ReferencedCopyNumberMap", reference=reference)  
+    standardCopyNumberMap <- new("ReferencedCopyNumberMap", reference=reference, chromosomeSizes=chromosomeSizes)  
     invisible(sapply(ls(facetsCopyNumberResults[[reference]]@map), function(target){
       facetsProfile <- facetsCopyNumberResults[[reference]]@map[[target]]
       
@@ -108,8 +111,8 @@ facets_adapter <- function(facetsCopyNumberResults){
       segments <- select(facetsProfile@fit, chrom, start, end, cnlr.median)
       colnames(segments) <- c("chr", "start", "end", "cnlr")
       
-      profile <- new("CopyNumberProfile", ratio=ratio, segments=segments)
-      addEntry(map=standardCopyNumberMap, target=target, profile=profile)  
+      addSegments(map=standardCopyNumberMap, target=target, segments=segments, isAbsolute=FALSE)
+      addRatio(map=standardCopyNumberMap, target=target, segments=ratio, isAbsolute=FALSE)
     }))
     return(standardCopyNumberMap)
   })
@@ -119,6 +122,7 @@ facets_adapter <- function(facetsCopyNumberResults){
 
 test_facets_adapter <- function(){
   facetsCopyNumberResults <- retrieve_legacy_facets_objects()
-  standardCopyNumberMapList <- facets_adapter(facetsCopyNumberResults)
+  chromosomeSizes <- generateChromosomeSizes(genome = BSgenome.Hsapiens.UCSC.hg19)
+  standardCopyNumberMapList <- facets_adapter(facetsCopyNumberResults, chromosomeSizes)
 }
 test_facets_adapter()

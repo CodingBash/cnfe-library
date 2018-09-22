@@ -1,5 +1,4 @@
 setwd("C:/Users/bbece/Documents/Git-Projects/Git-Research-Projects/cnfe-library")
-source("./class_definitions.R")
 source("./utility_functions.R")
 
 defineGenerics <- function(){
@@ -37,7 +36,7 @@ defineFacetsClass <- function(){
   setClass("ReferencedFacetsOutputMap", representation(map="environment", reference="character"),
            prototype(map=new.env(), reference=NA_character_))
   setMethod("addEntry", signature(map = "ReferencedFacetsOutputMap", target="character", profile="FacetsOutputContainer"), function(map, target, profile){ 
-      map@map[[target]] <- profile
+    map@map[[target]] <- profile
   })
   setMethod("addRatio", signature(map = "ReferencedFacetsOutputMap", target="character", ratio="data.frame"), function(map, target, ratio){ 
     if(is.null(map@map[[target]])) {
@@ -66,17 +65,25 @@ defineFacetsClass <- function(){
 defineStandardClass <- function(){
   # TODO: Add validation on BED data.frame
   setClass("CopyNumberProfile", representation(chromosomalSegments="data.frame", chromosomalRatio="data.frame", absoluteSegments="data.frame", absoluteRatio="data.frame"))
-  setClass("ReferencedCopyNumberMap", representation(map="environment", reference="character"),
+  setClass("ReferencedCopyNumberMap", representation(map="environment", reference="character", chromosomeSizes="data.frame"),
            prototype(map=new.env(), reference=NA_character_))
   setMethod("addEntry", signature(map = "ReferencedCopyNumberMap", target="character", profile="CopyNumberProfile"), function(map, target, profile){ 
     map@map[[target]] <- profile
   })
-
+  
   setMethod("removeEntry", signature(map = "ReferencedCopyNumberMap", target="character"), function(map, target){ 
     remove(list=c(target), envir=map@map)
   })
   
   setMethod("addRatio", signature(map = "ReferencedCopyNumberMap", target="character", ratio="data.frame", chromosomeSizes="data.frame", isAbsolute="logical"), function(map, target, ratio, chromosomeSizes, isAbsolute){ 
+    if(missing(chromosomeSizes)){
+      if(!is.null(map@chromosomeSizes)){
+        chromosomeSizes = map@chromosomeSizes
+      } else {
+        stop("Add chromosomeSizes before adding ratios") # TODO: Bad design: should not require chromosomeSizes to be added beforehand
+      }
+    } 
+    
     chromosomalRatio <- NA
     absoluteRatio <- NA
     
@@ -99,7 +106,15 @@ defineStandardClass <- function(){
     }
   })
   
-  setMethod("addSegments", signature(map = "ReferencedCopyNumberMap", target="character", segments="data.frame", chromosomeSizes="data.frame", isAbsolute="logical"), function(map, target, segments){ 
+  setMethod("addSegments", signature(map = "ReferencedCopyNumberMap", target="character", segments="data.frame", chromosomeSizes="data.frame", isAbsolute="logical"), function(map, target, segments, chromosomeSizes, isAbsolute){ 
+    if(missing(chromosomeSizes)){
+      if(!is.null(map@chromosomeSizes)){
+        chromosomeSizes = map@chromosomeSizes
+      } else {
+        stop("Add chromosomeSizes before adding segments") # TODO: Bad design: should not require chromosomeSizes to be added beforehand
+      }
+    } 
+    
     chromosomalSegments <- NA
     absoluteSegments <- NA
     
@@ -149,8 +164,11 @@ defineStandardClass <- function(){
   
 }
 
+print("Defining Generics")
 defineGenerics()
+print("Defining FACETS interface class")
 defineFacetsClass()
+print("Defining standard data class")
 defineStandardClass()
 
 ################################################################################################################################################
