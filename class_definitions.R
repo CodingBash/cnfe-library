@@ -77,12 +77,24 @@ defineStandardClass <- function(){
   })
   
   setMethod("addRatio", signature(map = "ReferencedCopyNumberMap", target="character", ratio="data.frame", chromosomeSizes="data.frame", isAbsolute="logical"), function(map, target, ratio, chromosomeSizes, isAbsolute){ 
+    chromosomalRatio <- NA
+    absoluteRatio <- NA
+    
+    if(isAbsolute == TRUE){
+      absoluteRatio <- ratio
+      chromosomalRatio <- genomicConversion(absoluteRatio, chromosomeSizes, chromosomeToAbsolute = False)
+    } else {
+      chromosomalRatio <- ratio
+      absoluteRatio <- genomicConversion(chromosomalRatio, chromosomeSizes, chromosomeToAbsolute = True)
+    }
+    
     if(is.null(map@map[[target]])) {
-      profile <- new("CopyNumberProfile", ratio=ratio)
+      profile <- new("CopyNumberProfile", chromosomalRatio=chromosomalRatio, absoluteRatio=absoluteRatio)
       map@map[[target]] <- profile
     } else {
       profile <- map@map[[target]]
-      profile@ratio <- ratio
+      profile@chromosomalRatio <- chromosomalRatio
+      profile@absoluteRatio <- absoluteRatio
       map@map[[target]] <- profile
     }
   })
@@ -93,20 +105,23 @@ defineStandardClass <- function(){
     
     if(isAbsolute == TRUE){
       absoluteSegments <- segments
-      chromosomalSegments <- NA # TODO
+      chromosomalSegments <- genomicConversion(absoluteSegments, chromosomeSizes, chromosomeToAbsolute = False)
     } else {
       chromosomalSegments <- segments
-      absoluteSegments <- chromsomeToAbsoluteConversion(segments, chromosomeSizes)
+      absoluteSegments <- genomicConversion(chromosomalSegments, chromosomeSizes, chromosomeToAbsolute = True)
     }
+    
     if(is.null(map@map[[target]])) {
-      profile <- new("CopyNumberProfile", segments=segments)
+      profile <- new("CopyNumberProfile", chromosomalSegments=chromosomalSegments, absoluteSegments=absoluteSegments)
       map@map[[target]] <- profile
     } else {
       profile <- map@map[[target]]
-      profile@segments <- segments
+      profile@chromosomalSegments <- chromosomalSegments
+      profile@absoluteSegments <- absoluteSegments
       map@map[[target]] <- profile
     }
   })
+  
   setMethod("retrieveTargetSampleList", signature(map = "ReferencedCopyNumberMap"), function(map){ 
     return(ls(map@map))
   })
