@@ -32,7 +32,7 @@ defineGenerics <- function(){
   setGeneric("retrieveTargetSampleList", function(map, class) {
     standardGeneric("retrieveTargetSampleList")
   })
-  setGeneric("retrieveTargetSampleListSegments", function(map, class) {
+  setGeneric("retrieveTargetSampleListSegments", function(map, class, getAbsolute) {
     standardGeneric("retrieveTargetSampleListSegments")
   })
 }
@@ -164,10 +164,18 @@ defineStandardClass <- function(){
     return(matches)
   })
   
-  setMethod("retrieveTargetSampleListSegments", signature(map = "ReferencedCopyNumberMap", class = "character"), function(map, class){ 
+  setMethod("retrieveTargetSampleListSegments", signature(map = "ReferencedCopyNumberMap", class = "character", getAbsolute="logical"), function(map, class, getAbsolute){ 
     targetSampleList <- retrieveTargetSampleList(map, class)
     segmentList <- lapply(targetSampleList, function(sample){
-      return(map@map[[sample]]@segments)
+      segments <- NA
+      # TODO: Warn on missing/empty segments
+      if(getAbsolute == TRUE){
+        segments <- map@map[[sample]]@absoluteSegments
+      } else {
+        segments <- map@map[[sample]]@chromosomalSegments
+      }
+        
+      return(segments)
     })
     targetSampleSegments <- do.call(rbind, segmentList)
   })

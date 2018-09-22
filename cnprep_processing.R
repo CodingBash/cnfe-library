@@ -8,7 +8,7 @@ library(BSgenome.Hsapiens.UCSC.hg19)
 cnprep_process <- function(standardCopyNumberMap){
   normal_samples <- retrieveTargetSampleList(standardCopyNumberMap, class="N") # May not even need this
   reference <- standardCopyNumberMap@reference
-  normal_segments <- retrieveTargetSampleListSegments(standardCopyNumberMap, class="N")
+  normal_segments <- retrieveTargetSampleListSegments(standardCopyNumberMap, class="N", getAbsolute = TRUE)
   
   target_samples <- retrieveTargetSampleList(standardCopyNumberMap, class=c("T", "F", "M"))
   
@@ -51,7 +51,13 @@ transformSegmentsForCNprep <- function(standardCopyNumberProfile, sample){
 }
 
 transformRatioForCNprep <- function(standardCopyNumberProfile, sample){
-  ratinput <- data.frame(standardCopyNumberProfile@absoluteRatio[[4]])
+  ratio <- NA
+  if(nrow(standardCopyNumberProfile@absoluteRatio == 0)){
+    ratio <- standardCopyNumberProfile@chromosomeRatio    
+  } else {
+    ratio <- standardCopyNumberProfile@absoluteRatio
+  }
+  ratinput <- data.frame(ratio[[4]])
   names(ratinput) <- c(sample)
   return(ratinput)
 }
