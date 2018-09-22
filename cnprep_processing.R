@@ -13,54 +13,44 @@ cnprep_process <- function(standardCopyNumberMap){
   
   target_samples <- retrieveTargetSampleList(standardCopyNumberMap, class=c("T", "F", "M"))
   
-  for(target_samples.i in seq_along(target_samples)){
-    sample <- target_samples[target_samples.i]
-    standardCopyNumberProfile <- standardCopyNumberMap@map[[sample]]
-    
-    # TODO: Create one huge seginput (I have code somewhere on drug-response-prediction)
-    # TODO: Allow users to choose between parallel and syncrynous CNprep run -> for fault continuation if one of samples are bad.
-    # TODO: Among whole package, need to focus on exception handling.
-    
-    seginput <- transformSegmentsForCNprep(standardCopyNumberProfile, sample)
-    ratinput <- transformRatioForCNprep(standardCopyNumberProfile, sample)
-    # TODO: Get seginput, ratinput
-    
+  cnprep_inputs <- lapply(target_samples, function(target_sample){
+    standardCopyNumberProfile <- standardCopyNumberMap@map[[target_sample]]
+    seginput <- transformSegmentsForCNprep(standardCopyNumberProfile, target_sample)
+    ratinput <- transformRatioForCNprep(standardCopyNumberProfile, target_sample)
+    return(list("seginput" = seginput, "ratinput" = ratinput))
+  })
+  names(cnprep_inputs) <- target_samples
+  
+  parallel <- TRUE # TODO: Passed as parameter
+  
+  segtable_binded <- data.frame(stringsAsFactors = FALSE)
+  if(parallel == TRUE){
+    seginput_binded <- do.call(rbind, lapply(cnprep_inputs, function(cnprep_input){cnprep_input[["seginput"]]}))
+    ratinput_binded <- do.call(cbind, lapply(cnprep_inputs, function(cnprep_input){cnprep_input[["ratinput"]]}))
     try({
-      # TODO: Add parameters as function inputs - allow all parameters
-      segtable <- runCNpreprocessing(seginput = seginput, ratinput = ratinput, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial) #TODO: Is there a distrib="Grid"?
-      print(paste("Produced segtable for sample", sample))
-      
-      write.table(segtable, paste("./output/", output_dir,"/", sample, "_segtable.tsv", sep = ""), row.names = F, sep = "\t", quote = FALSE)
-      print(paste("Wrote output for sample", sample))
+      segtable_binded <- runCNpreprocessing(seginput = seginput_binded, ratinput = ratinput_binded, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
     }, silent = TRUE)
-    # . . a
-    
+  } else {
+    segtable_binded <- do.call(rbind, lapply(cnprep_inputs, function(cnprep_input){
+      seginput <- cnprep_input[["seginput"]]
+      ratinput <- cnprep_input[["ratinput"]]
+      segtable <- runCNpreprocessing(seginput = seginput, ratinput = ratinput, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
+      return(segtable)
+    }))
   }
-  
-  # . . .
-  
-  segtable <- NA # segtable of all results
-  return(segtable)
+  return(segtable_binded)
 }
 
 transformSegmentsForCNprep <- function(standardCopyNumberProfile, sample){
-  seginput <- data.frame(stringsAsFactors = FALSE)
   chromosomalSegments <- standardCopyNumberProfile@chromosomalSegments
   absoluteSegments <- standardCopyNumberProfile@absoluteSegments 
-    
-  # Iterate through each segment
-  for(segment_data.index in seq(1, nrow(standardCopyNumberProfile@chromosomalSegments))){
-     
-    # TODO: Support probes by including in adapter and object design (need to really consider object design (need to improve S4 class skills))   
-    
-    # TODO: Support for combinatorial missings of standardCopyNumberProfile object - some users might not have all data available - only require what is necessary (through S4 object validation)
-    seginput.entry <- data.frame(ID = sample, seg.median = absoluteSegments[[4]], 
-                                 chrom = absoluteSegments[[1]], chrom.pos.start = chromosomalSegments[[2]], 
-                                 chrom.pos.end = chromosomalSegments[[3]], abs.pos.start = absoluteSegments[[2]],
-                                 abs.pos.end = absoluteSegments[[3]])
-    
-    seginput <- rbind(seginput, seginput.entry)
-  }
+  probes <- standardCopyNumberProfile@probes
+  
+  seginput <- data.frame(ID = sample, start = probes[[2]], end = probes[[3]], seg.median = absoluteSegments[[4]], 
+                         chrom = absoluteSegments[[1]], chrom.pos.start = chromosomalSegments[[2]], 
+                         chrom.pos.end = chromosomalSegments[[3]], abs.pos.start = absoluteSegments[[2]],
+                         abs.pos.end = absoluteSegments[[3]], stringsAsFactors = FALSE)
+  
   return(seginput)
 }
 
