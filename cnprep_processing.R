@@ -6,11 +6,12 @@ biocLite("BSgenome.Hsapiens.UCSC.hg19")
 library(BSgenome.Hsapiens.UCSC.hg19)
 library(CNprep)
 
-cnprep_process <- function(standardCopyNumberMap){
+cnprep_process <- function(standardCopyNumberMap, parallel = TRUE, mclust_model = "E", minjoin = 0, ntrial = 10){
   normal_samples <- retrieveTargetSampleList(standardCopyNumberMap, class="N") # May not even need this
   reference <- standardCopyNumberMap@reference
   normal_segments <- retrieveTargetSampleListSegments(standardCopyNumberMap, class="N", getAbsolute = TRUE)
-  
+  norminput <- retrieveNormInput(normal_segments)
+  norminput <- filterNormInput(norminput=norminput, length_threshold = 10000000)
   target_samples <- retrieveTargetSampleList(standardCopyNumberMap, class=c("T", "F", "M"))
   
   cnprep_inputs <- lapply(target_samples, function(target_sample){
@@ -20,8 +21,6 @@ cnprep_process <- function(standardCopyNumberMap){
     return(list("seginput" = seginput, "ratinput" = ratinput))
   })
   names(cnprep_inputs) <- target_samples
-  
-  parallel <- TRUE # TODO: Passed as parameter
   
   segtable_binded <- data.frame(stringsAsFactors = FALSE)
   if(parallel == TRUE){
@@ -34,7 +33,13 @@ cnprep_process <- function(standardCopyNumberMap){
     segtable_binded <- do.call(rbind, lapply(cnprep_inputs, function(cnprep_input){
       seginput <- cnprep_input[["seginput"]]
       ratinput <- cnprep_input[["ratinput"]]
-      segtable <- runCNpreprocessing(seginput = seginput, ratinput = ratinput, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
+      
+      print(paste0("CNprep: Starting processing for sample: ",  seginput[1, 1])) # TODO: Get sample from list name, not table
+      try({
+        segtable <- runCNpreprocessing(seginput = seginput, ratinput = ratinput, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
+      }, silent = TRUE)
+      print(paste0("CNprep: Processed sample: ",  seginput[1, 1])) # TODO: Get sample from list name, not table
+      
       return(segtable)
     }))
   }
@@ -65,6 +70,27 @@ transformRatioForCNprep <- function(standardCopyNumberProfile, sample){
   names(ratinput) <- c(sample)
   return(ratinput)
 }
+
+#
+# Retrieve the norminput argument for CNprep::CNpreprocessing()
+#
+retrieveNormInput <- function(normal_segments){
+  norminput <- do.call(rbind, lapply(seq(1, nrow(normal_segments)), function(normal_segments.index){
+    norminput.entry <- data.frame(length = normal_segments[normal_segments.index, 3] - normal_segments[normal_segments.index, 2], segmedian = normal_segments[normal_segments.index, 4], stringsAsFactors = FALSE)
+    return(norminput.entry)
+  }))
+  return(norminput)
+}
+
+#
+# Filter norminput from artifacts
+#
+filterNormInput <- function(norminput, length_threshold=10000000){
+  # TODO: Algorithm to dynamically determine length_threshold
+  filtered_norminput <- norminput[norminput$length > length_threshold & abs(norminput$segmedian) < 0.5,]
+  return(filtered_norminput)
+}
+
 
 #
 # Wrapper function for CNprep::CNpreprocessing()
