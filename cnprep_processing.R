@@ -28,6 +28,7 @@ cnprep_process <- function(standardCopyNumberMap, parallel = TRUE, mclust_model 
     ratinput_binded <- do.call(cbind, lapply(cnprep_inputs, function(cnprep_input){cnprep_input[["ratinput"]]}))
     try({
       segtable_binded <- runCNpreprocessing(seginput = seginput_binded, ratinput = ratinput_binded, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
+      print(segtable_binded)
     }, silent = TRUE)
   } else {
     segtable_binded <- do.call(rbind, lapply(cnprep_inputs, function(cnprep_input){

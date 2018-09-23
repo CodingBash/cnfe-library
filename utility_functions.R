@@ -84,3 +84,25 @@ genomicConversion <- function(inputSegments, chromosomeSizes, chromosomeToAbsolu
   }
   return(inputSegments)
 }
+
+retrieveChromosomeSizes <- function(genomeString){
+  if(missing(genomeString)){
+    stop("genomeString required for retrieveGenome()")
+  }
+  chromosomeSizes <- NA
+  if(genomeString == "hg19"){
+    chromosomeSizes <- generateChromosomeSizes(genome = BSgenome.Hsapiens.UCSC.hg19)
+  }
+  return(chromosomeSizes)
+}
+
+runCNprep <- function(standardCopyNumberMapList, parallel, mclust_model, minjoin, ntrial){
+  segtable_results <- list() 
+  lapply(names(standardCopyNumberMapList), function(reference){
+    print(paste0("FACADE: Running CNprep for reference: ", reference))
+    segtable <- cnprep_process(standardCopyNumberMapList[[reference]], parallel = parallel, mclust_model = mclust_model, minjoin = minjoin, ntrial = ntrial)
+    return(segtable)
+  })
+  names(segtable_results) <- names(standardCopyNumberMapList)
+  return(segtable_results)
+}
