@@ -1,3 +1,5 @@
+library(BSgenome.Hsapiens.UCSC.hg19)
+
 #
 # Given a genome, generate the chromosome sizes
 # TODO: Remove "chr" and "X" and "Y". This will make chromosomal <-> absolute conversion easier
@@ -97,12 +99,19 @@ retrieveChromosomeSizes <- function(genomeString){
 }
 
 runCNprep <- function(standardCopyNumberMapList, parallel, mclust_model, minjoin, ntrial){
-  segtable_results <- list() 
-  lapply(names(standardCopyNumberMapList), function(reference){
+  segtable_results <- lapply(names(standardCopyNumberMapList), function(reference){
     print(paste0("FACADE: Running CNprep for reference: ", reference))
     segtable <- cnprep_process(standardCopyNumberMapList[[reference]], parallel = parallel, mclust_model = mclust_model, minjoin = minjoin, ntrial = ntrial)
     return(segtable)
   })
   names(segtable_results) <- names(standardCopyNumberMapList)
   return(segtable_results)
+}
+
+runSlicing <- function(segtableResults){
+  slicingResults <- lapply(names(segtableResults), function(reference){
+    print(paste0("FACADE: Running CNprep for reference: ", reference))
+    segtable <- slice_segments(standardCopyNumberMapList[[reference]])
+    return(segtable)
+  })
 }

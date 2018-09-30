@@ -1,7 +1,5 @@
 setwd("C:/Users/bbece/Documents/Git-Projects/Git-Research-Projects/cnfe-library")
 source("./class_definitions.R")
-source("https://bioconductor.org/biocLite.R")
-biocLite("BSgenome.Hsapiens.UCSC.hg19")
 library(BSgenome.Hsapiens.UCSC.hg19)
 library(tidyverse)
 
@@ -59,4 +57,3 @@ test_facets_adapter <- function(){
   chromosomeSizes <- generateChromosomeSizes(genome = BSgenome.Hsapiens.UCSC.hg19)
   standardCopyNumberMapList <- facets_adapter(facetsCopyNumberResults, chromosomeSizes)
 }
-test_facets_adapter()

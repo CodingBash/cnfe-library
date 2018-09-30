@@ -1,0 +1,200 @@
+overlap.matrix<-function(a,inflate){ # a has columns of medians and errors. errors are inflated by a factor.				
+	errmat<-matrix(nrow=nrow(a),data=rep(a[,"error"],times=nrow(a)))
+	errmat<-inflate*(errmat+t(errmat))
+	dmat<-matrix(nrow=nrow(a),data=rep(a[,"median"],times=nrow(a)))
+	return(matrix(nrow=nrow(a),data=(errmat>abs(dmat-t(dmat))))) #return a truth matrix for overlaps
+}
+
+overlap.test<-function(vtrue,olm){
+	return(sum(olm[vtrue,vtrue]))
+}
+
+# if a mound is too long, remove its base; iterate until no long mounds are left
+trim.mounds<-function(aein,inflate=1,mysign=0,toolong=1000){ # aein is a table of detected events with magnitudes, errors and chromosomes indicated
+	if(mysign==0){cat("mysign = +-1 must be specified\n");return}
+	if(nrow(aein)==0)return(aein)
+	else{
+	ae<-aein
+	ae[,"median"]<-ae[,"median"]*mysign # make sure lower values are closer to baseline
+	trimdone<-1
+	while(trimdone==1){
+	newae<-matrix(ncol=ncol(ae),nrow=0)
+	dimnames(newae)[[2]]<-dimnames(ae)[[2]]
+	trimdone<-0
+	maxend<-max(ae[,"end"])+1
+	mychr<-unique(ae[,"chrom"])
+	for(i in mychr){
+		aei<-matrix(ncol=ncol(ae),data=ae[ae[,"chrom"]==i,])
+		dimnames(aei)[[2]]<-dimnames(ae)[[2]]
+		# enumerate all the mounds. nrow(aei)=1 requires special care! nrow(aei)=0 does not happen.
+		if(nrow(aei)>1)mounds<-cumsum(c(F,(aei[-nrow(aei),"end"]-aei[-1,"start"])<(-1)))+1
+		else mounds<-1
+		for(j in 1:max(mounds)){
+			aij<-matrix(ncol=ncol(aei),data=aei[mounds==j,])			
+			dimnames(aij)[[2]]<-dimnames(ae)[[2]]
+			if(max(aij[,"end"])-min(aij[,"start"])+1>toolong){
+				trimdone<-1
+				ztrue<-winsch(aij[,"median"]-inflate*aij[,"error"],
+					aij[,"median"]+inflate*aij[,"error"],aij[,"end"]-aij[,"start"]+1)
+				aijbase<-matrix(ncol=ncol(aij),data=aij[ztrue,])
+				dimnames(aijbase)[[2]]<-dimnames(ae)[[2]]
+				aijbase<-matrix(ncol=ncol(aij),data=aijbase[rev(order(aijbase[,"median"])),]) # order the base from top down
+				dimnames(aijbase)[[2]]<-dimnames(ae)[[2]]
+				if(nrow(aijbase)<nrow(aij)){
+					aijrest<-matrix(ncol=ncol(aij),data=aij[!ztrue,])
+					dimnames(aijrest)[[2]]<-dimnames(ae)[[2]]
+					base2rest<-abs(t(matrix(ncol=nrow(aijbase),data=rep(aijrest[,"median"],times=nrow(aijbase))))-aijbase[,"median"])
+					closest<-t(apply(base2rest,2,order))[,1] # now everyone else has a base assignment
+					tiers<-rbind(cbind(aijbase,1:nrow(aijbase)),cbind(aijrest,closest))
+				}
+				else tiers<-matrix(ncol=ncol(aijbase),data=aijbase[-nrow(aijbase),])
+				dimnames(tiers)[[2]]<-dimnames(aijbase)[[2]]
+				tiers<-matrix(ncol=ncol(tiers),data=tiers[order(tiers[,"start"]),])
+				dimnames(tiers)[[2]]<-dimnames(aijbase)[[2]]
+				newae<-rbind(newae,tiers)
+			} #end if too long
+			else newae<-rbind(newae,aij)
+		} #end loop over j
+	} #end loop over i
+	ae<-newae
+	} #end while
+	ae[,"median"]<-ae[,"median"]*mysign
+	return(ae)
+	} #end if-else 
+}
+
+# Weighted interval schedule optimization. Arguments: interval starts and
+# ends. Value: indicator vector for inclusion of intervals in the optimal
+# schedule. Reference:
+# http://www.csc.liv.ac.uk/~darek/COMP523/lecture12-13.ppt
+##256,1,Lectures 12 and 13  Dynamic programming: weighted interval scheduling
+winsch<-function(starts,ends,w){
+	n<-length(ends)
+	z<-matrix(ncol=4,data=c(starts,ends,w,1:n))
+	dimnames(z)[[2]]<-c("starts","ends","weights","number")
+	z<-matrix(ncol=4,data=z[order(z[,"ends"]),])
+	dimnames(z)[[2]]<-c("starts","ends","weights","number")
+	y<-matrix(ncol=3,data=c(z[,"ends"],z[,"starts"],
+			rep(0,n),1:n,rep(1,n),rep(0,n)))
+	y<-matrix(ncol=3,data=y[order(y[,1]),])
+	y[,3]<-cumsum(y[,3])
+	y<-matrix(ncol=3,data=y[y[,2]!=0,])
+	p<-y[order(y[,2]),3]
+	m<-c(0,p)
+	ind<-rep(F,n)
+	w<-z[,"weights"]
+	for(i in 1:n) m[i+1]<-max(w[i]+m[p[i]+1],m[i])
+	i<-n+1
+	while(i>1){
+		if(m[i-1]<m[i]){
+			ind[i-1]<-T
+			i<-p[i-1]+1
+		}
+		else i<-i-1
+	}
+	return(ind[order(z[,"number"])])
+}
+
+# a new version using an optimal interval-scheduling algorithm
+make.mounds<-function(ae,expindex,inflate=1,mysign=0){ # ae is a table of detected events with magnitudes, errors and chromosomes indicated
+	if(mysign==0){cat("mysign = +-1 must be specified\n");return}
+	slicetab<-matrix(ncol=7,nrow=0)
+	dimnames(slicetab)[[2]]<-c("start","end","tier","parent","chrom","is.parent","exp.index")
+	if(nrow(ae)==0)return(slicetab)
+	else ae[,"median"]<-ae[,"median"]*mysign # make sure lower values are closer to baseline
+	maxend<-max(ae[,"end"])+1
+	mychr<-unique(ae[,"chrom"])
+	nmound<-0
+	for(i in mychr){
+		aei<-matrix(ncol=ncol(ae),data=ae[ae[,"chrom"]==i,])
+		dimnames(aei)[[2]]<-dimnames(ae)[[2]]
+		# enumerate all the mounds. nrow(aei)=1 requires special care! nrow(aei)=0 does not happen.
+		if(nrow(aei)>1)mounds<-cumsum(c(F,(aei[-nrow(aei),"end"]-aei[-1,"start"])<(-1)))+1
+		else mounds<-1
+		for(j in 1:max(mounds)){
+			nmound<-nmound+1
+			aij<-matrix(ncol=ncol(aei),data=aei[mounds==j,])
+			dimnames(aij)[[2]]<-dimnames(ae)[[2]]
+			ztrue<-winsch(aij[,"median"]-inflate*aij[,"error"],
+				aij[,"median"]+inflate*aij[,"error"],aij[,"end"]-aij[,"start"]+1)
+			aijbase<-matrix(ncol=ncol(aij),data=aij[ztrue,])
+			dimnames(aijbase)[[2]]<-dimnames(ae)[[2]]
+			aijbase<-matrix(ncol=ncol(aij),data=aijbase[rev(order(aijbase[,"median"])),]) # order the base from top down
+			dimnames(aijbase)[[2]]<-dimnames(ae)[[2]]
+			if(nrow(aijbase)<nrow(aij)){
+				aijrest<-matrix(ncol=ncol(aij),data=aij[!ztrue,])
+				dimnames(aijrest)[[2]]<-dimnames(ae)[[2]]
+				base2rest<-abs(t(matrix(ncol=nrow(aijbase),data=rep(aijrest[,"median"],times=nrow(aijbase))))-aijbase[,"median"])
+				closest<-t(apply(base2rest,2,order))[,1] # now everyone else has a base assignment
+				tiers<-rbind(cbind(aijbase,1:nrow(aijbase)),cbind(aijrest,closest))
+			}
+			else tiers<-cbind(aijbase,1:nrow(aijbase))
+			dimnames(tiers)[[2]]<-c(dimnames(aijbase)[[2]],"mytier")
+			tiers<-matrix(ncol=ncol(tiers),data=tiers[order(tiers[,"mytier"]),])
+			dimnames(tiers)[[2]]<-c(dimnames(aijbase)[[2]],"mytier")
+			ntiers<-nrow(aijbase)
+			for(k in 1:ntiers){
+				tiertab<-matrix(ncol=ncol(tiers),data=tiers[tiers[,"mytier"]<=k,])
+				dimnames(tiertab)[[2]]<-dimnames(tiers)[[2]]
+				tiertab<-matrix(ncol=ncol(tiers),data=tiertab[order(tiertab[,"start"]),])
+				dimnames(tiertab)[[2]]<-dimnames(tiers)[[2]]
+				if(nrow(tiertab)>1)slices<-cumsum(c(F,(tiertab[-nrow(tiertab),"end"]-tiertab[-1,"start"])<(-1)))+1
+				else slices<-1
+				slicestarts<-tiertab[match(unique(slices),slices),"start"]
+				sliceends<-tiertab[rev(nrow(tiertab)+1-match(unique(rev(slices)),rev(slices))),"end"]
+				if(nrow(slicetab)>0){ # an ugly solution, but who cares as long as it works?
+					slicein<-(!is.element(slicestarts+maxend*sliceends,slicetab[,1]+maxend*slicetab[,2]))
+					slicestarts<-slicestarts[slicein]
+					sliceends<-sliceends[slicein]
+				}
+				slicetab<-rbind(slicetab,cbind(slicestarts,sliceends,rep(k,length(slicestarts)),rep(nmound,length(slicestarts)),rep(i,length(slicestarts)),
+						#ifelse(k==ntiers,rep(1,length(slicestarts)),rep(0,length(slicestarts))),expindex))
+						rep(as.numeric(k==ntiers),length(slicestarts)),expindex))
+			} #end loop over k
+		} #end loop over j
+	} #end loop over i
+	return(slicetab) 
+}
+
+maskAndSlice<-function(tumortable,normaltable,polarity,tumorindex,normalindex,
+	tumorlabel,toolong,chromends){
+	tumorevs<-tumortable[tumorindex,]
+	normalevs<-normaltable[normalindex,]
+	tumorows<-which(tumorindex)
+	normalrows<-which(normalindex)
+	stringstarts<-NULL
+	if(length(tumorows)>0&length(normalrows)>0){ #find overlaps
+		overlap<-matrix(ncol=nrow(tumorevs),nrow=nrow(normalevs))
+		for(i in 1:nrow(tumorevs))overlap[,i]<-
+			(pmin(tumorevs[i,"EndProbe"],normalevs[,"EndProbe"])-
+			pmax(tumorevs[i,"StartProbe"],normalevs[,"StartProbe"])+1)/
+			(pmax(tumorevs[i,"EndProbe"],normalevs[,"EndProbe"])-
+			pmin(tumorevs[i,"StartProbe"],normalevs[,"StartProbe"])+1)
+		sumover<-colSums(overlap*(overlap>0))
+		maxover<-apply(overlap,2,max)
+		maskme<-(sumover>0.75|maxover>0.75)
+		stringstarts<-tumorevs[maskme,"StartProbe"]
+		stringends<-tumorevs[maskme,"EndProbe"]
+	}
+	tst<-cbind(tumortable[,"mediandev"],
+	tumortable[,"EndProbe"]-tumortable[,"StartProbe"]+1,rep(1,nrow(tumortable)),
+	tumortable)
+	tst[!tumorindex,1]<-100*(1-2*polarity)
+	tst<-simplify.shorty(tst,boundaries=chromends[1:22])
+	tst[,"EndProbe"]<-cumsum(tst[,2]) # recover new end...
+	tst[,"StartProbe"]<-c(1,(tst[-nrow(tst),"EndProbe"]+1)) # ... and start values
+	if(length(stringstarts)>0){ # mask
+		tst<-apply.cnpmask(tst,stringstarts,stringends,chromends[1:22],
+			thresh=min((2*polarity-1)*tumorevs[,"median"]-0.001)*(2*polarity-1),
+			sign=2*polarity-1,ground=100*(1-2*polarity),myseed=123)
+		tst[,"EndProbe"]<-cumsum(tst[,2]) # recover new end...
+		tst[,"StartProbe"]<-c(1,(tst[-nrow(tst),"EndProbe"]+1)) # ... and start values
+	}
+	tst[,"mediandev"]<-tst[,1]
+	tst<-tst[tst[,"mediandev"]!=100*(1-2*polarity),
+					c("StartProbe","EndProbe","chrom","mediandev","segerror")]
+	dimnames(tst)[[2]]<-c("start","end","chrom","median","error")	
+#	tst<-trim.mounds(as.matrix(tst),inflate=2,mysign=2*polarity-1,toolong=toolong)
+	slices<-make.mounds(as.matrix(tst),tumorlabel,inflate=2,mysign=2*polarity-1)
+	return(slices)
+}

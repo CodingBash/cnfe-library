@@ -1,9 +1,6 @@
 #
 # This is for generating the chromosomeSizes - somehow the genome needs to be passed in by the user.
 #
-source("https://bioconductor.org/biocLite.R")
-biocLite("BSgenome.Hsapiens.UCSC.hg19")
-library(BSgenome.Hsapiens.UCSC.hg19)
 library(CNprep)
 
 cnprep_process <- function(standardCopyNumberMap, parallel = TRUE, mclust_model = "E", minjoin = 0, ntrial = 10){
@@ -27,9 +24,10 @@ cnprep_process <- function(standardCopyNumberMap, parallel = TRUE, mclust_model 
     seginput_binded <- do.call(rbind, lapply(cnprep_inputs, function(cnprep_input){cnprep_input[["seginput"]]}))
     ratinput_binded <- do.call(cbind, lapply(cnprep_inputs, function(cnprep_input){cnprep_input[["ratinput"]]}))
     try({
+      print("CNprep: Starting processing for all samples in parallel")
       segtable_binded <- runCNpreprocessing(seginput = seginput_binded, ratinput = ratinput_binded, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
-      print(segtable_binded)
-    }, silent = TRUE)
+      print("CNprep: Completed processing for all samples")
+      }) # TODO: Verify exception handling is performed correctly
   } else {
     segtable_binded <- do.call(rbind, lapply(cnprep_inputs, function(cnprep_input){
       seginput <- cnprep_input[["seginput"]]
@@ -38,10 +36,10 @@ cnprep_process <- function(standardCopyNumberMap, parallel = TRUE, mclust_model 
       print(paste0("CNprep: Starting processing for sample: ",  seginput[1, 1])) # TODO: Get sample from list name, not table
       try({
         segtable <- runCNpreprocessing(seginput = seginput, ratinput = ratinput, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
-      }, silent = TRUE)
-      print(paste0("CNprep: Processed sample: ",  seginput[1, 1])) # TODO: Get sample from list name, not table
-      
-      return(segtable)
+        print(paste0("CNprep: Processed sample: ",  seginput[1, 1])) # TODO: Get sample from list name, not table
+        return(segtable)
+      }) # TODO: Verify exception handling is performed correctly
+      print(paste0("CNprep: Sample: ",  seginput[1, 1], " failed!")) # TODO: Get sample from list name, not table
     }))
   }
   return(segtable_binded)
@@ -115,4 +113,3 @@ test_cnprep_process <- function(){
   standardCopyNumberMap <- standardCopyNumberMapList[['hN30']]
   cnprep_process(standardCopyNumberMap)
 }
-test_cnprep_process()

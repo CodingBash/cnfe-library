@@ -1,0 +1,2261 @@
+# Given a short table and a threshold, construct a mask for frequent events (CNPs). A patch in a mask is a string of contiguous probes whose counts are all above
+# low.count, and with at least one probe with a count above high.count. boundaries is a vector of chromosome end positions. If boundaries is given, no chromosome
+# boundary will be crossed by a patch in a mask. where="above"|"below"|"band" indicates where a probe needs to be w.r.t. the threshold in order to be counted.
+# Value: a list of 2 items. stringstarts is a vector of start positions for the mask; stringends is a vector of end positions.
+# Example:  mymask.amp<-make.cnpmask(controls.shorty.good.22,1.1,"above",1,10,boundaries=chromends[1:22])
+#     (added by AK) 
+make.cnpmask<-function(normals.short,thresh,where,low.count,high.count,boundaries=NULL,ground=1){
+	#bt<-proc.time()
+	# determine all the segment end positions in the controls set. Break segments at chromosome boundaries.
+	segnorms<-all.segends(normals.short,boundaries)
+	# Assign, for each segment, its # of times above/below threshold
+	if(where=="above")normsup<-seg.times.above.thresh(normals.short,thresh,boundaries)
+	#if(where=="above")normsup<-event.count(normals.short,thresh,"amp",boundaries)
+	else if(where=="below")normsup<-seg.times.below.thresh(normals.short,thresh,boundaries)
+	else if(where=="band")normsup<-seg.times.outside.band(normals.short,ground,max(c(thresh,ground))-min(c(thresh,ground)),boundaries)
+	#cat(proc.time()-bt,"\ttime elapsed\n")
+	#bt<-proc.time()
+	# minup gets 1 wherever normsup is above low.count, 0 otherwise
+	minup<-ifelse(normsup>low.count,1,0)
+	# flip gets 1 wherever a string of 0s ends in minup, or wherever a string of 1s ends in minup, and 0 otherwise (1 at string endpoints only)
+	flip<-c(ifelse(minup[-length(minup)]!=minup[-1],1,0),1)
+	# flip also gets 1 wherever a chromosome ends
+	flip[which(is.element(segnorms,boundaries))]<-1
+	# flip is now changed to indicate the beginning, rather than the end, of a string
+	flip<-c(1,flip[-length(flip)])
+	# cumulative sum of flip in effect assigns string numbers to segments
+	cflip<-cumsum(flip)
+	# for each CNP determine the number of a string it belongs to
+	cnpups<-cflip[which(normsup>high.count)]
+	# rcnpups is a list of strings with CNPs in them
+	rcnpups<-intersect(1:max(cnpups),cnpups)
+	# stringends gives all the string end positions
+	stringends<-(segnorms[c(flip[-1],1)==1])
+	# stringstarts gives all the string start positions
+	stringstarts<-(c(1,stringends[-length(stringends)]+1))
+	#stringstarts<-segnorms[flip==1]
+	stringends<-stringends[rcnpups]
+	stringstarts<-stringstarts[rcnpups]
+	patches<-ifelse(is.element(cflip,rcnpups),1,0)
+	#cat(proc.time()-bt,"\ttime elapsed\n")
+	# to summarize: stringends gives end positions of the extended CNPs, stringstarts gives their start positions. Note that a string never crosses a chromosome boundary.
+	return(stringstarts,stringends,patches)
+}
+
+# A much faster version of make.cnpmask. It uses a precomputed flat truth table for events, or a subset thereof (a vector of experiment numbers); it also uses a segment end list
+# (segnorms). Added by AK.
+make.cnpmask.fast<-function(eventflat,segnorms,low.count,high.count,boundaries=NULL,subset=NULL){
+	#bt<-proc.time()
+	if(length(subset)==0)subset<-1:nrow(eventflat)
+	# Assign, for each segment, its # of times above/below threshold
+	normsup<-colSums(eventflat[subset,])
+	#cat(proc.time()-bt,"\ttime elapsed\n")
+	#bt<-proc.time()
+	# minup gets 1 wherever normsup is above low.count, 0 otherwise
+	minup<-ifelse(normsup>low.count,1,0)
+	# flip gets 1 wherever a string of 0s ends in minup, or wherever a string of 1s ends in minup, and 0 otherwise (1 at string endpoints only)
+	flip<-c(ifelse(minup[-length(minup)]!=minup[-1],1,0),1)
+	# flip also gets 1 wherever a chromosome ends
+	flip[which(is.element(segnorms,boundaries))]<-1
+	# flip is now changed to indicate the beginning, rather than the end, of a string
+	flip<-c(1,flip[-length(flip)])
+	# cumulative sum of flip in effect assigns string numbers to segments
+	cflip<-cumsum(flip)
+	# for each CNP determine the number of a string it belongs to
+	cnpups<-cflip[which(normsup>high.count)]
+	# rcnpups is a list of strings with CNPs in them
+	rcnpups<-intersect(1:max(cnpups),cnpups)
+	# stringends gives all the string end positions
+	stringends<-(segnorms[c(flip[-1],1)==1])
+	# stringstarts gives all the string start positions
+	stringstarts<-(c(1,stringends[-length(stringends)]+1))
+	stringends<-stringends[rcnpups]
+	stringstarts<-stringstarts[rcnpups]
+	patches<-ifelse(is.element(cflip,rcnpups),1,0)
+	#cat(proc.time()-bt,"\ttime elapsed\n")
+	# to summarize: stringends gives end positions of the extended CNPs, stringstarts gives their start positions. Note that a string never crosses a chromosome boundary.
+	return(stringstarts,stringends,patches)
+}	
+
+# Apply a mask to a short table. Segments completely covered by the mask are removed from the short table, and their probe numbers are randomly shared by the neighboring
+# segments. 
+# Arguments: short.table; stringstarts and stringends are the patch start and end positions for the mask. myseed (optional) is a random number generator seed between 0 and 1023.
+# Value: masked short table is returned.
+# Example: bcancer.short.all.22.nocnpamps<-apply.cnpmask(bcancer.short.all.22,mymask.amp$stringstarts,mymask.amp$stringends,myseed=123)
+#               (added by AK)  
+apply.cnpmask<-function(short.table,stringstarts,stringends,chromends,ground=1,myseed=10000){
+	if(myseed<=1023)set.seed(i=myseed)
+	tmpshort<-short.table
+	# Step 1: join the segments completely in the interior of the mask randomly to their neighboring segments
+	# for the strings (patches) in a mask, determine the segments in the short table where these patches begin and where they end
+	startsegs<-sort(as.vector(sapply(stringstarts,where.are.we,short.table=tmpshort)))
+	endsegs<-sort(as.vector(sapply(stringends,where.are.we,short.table=tmpshort)))
+	#if(length(which(endsegs-startsegs>1))==0)return(tmpshort) # a bug
+	if(length(which(endsegs-startsegs>1))>0){ # a fix
+	# select only strings that encompass whole segments between a start and an end
+	startsegred<-startsegs[which(endsegs-startsegs>1)]
+	endsegred<-endsegs[which(endsegs-startsegs>1)]
+	# marker marks by 1s the positions of start and end segments in the reduced list of strings
+	marker<-rep(0,nrow(tmpshort))
+	marker[startsegred]<-1
+	marker[endsegred]<-marker[endsegred]+1
+	cmarker<-cumsum(marker)%%2
+	cmarker[startsegred]<-0
+	cmarker[endsegred]<-0 # at this point cmarker is 1 only for segments completely covered by strings, 0 otherwise
+	# for each string we need to determine the total length of segments completely covered by the string,
+	segsum<-cumsum(tmpshort[,2])
+	sumcovered<-segsum[endsegred]-segsum[startsegred]-tmpshort[endsegred,2] # <--- which is precisely this
+	# this is a random portion that goes to the start segment of the string
+	gotostart<-floor(sumcovered*runif(length(sumcovered))+0.5)
+	gotoend<-sumcovered-gotostart # this portion goes to the end segment
+	# now update the lengths of the start and the end segments
+	tmpshort[startsegred,2]<-tmpshort[startsegred,2]+gotostart
+	tmpshort[endsegred,2]<-tmpshort[endsegred,2]+gotoend
+	# update tmpshort
+	tmpshort<-tmpshort[cmarker==0,]
+	} # closing bracket of the bug fix
+	#
+	# Step 2: find segments whose one end coincides with the end of a mask patch, and whose other end is covered by the mask.
+	# Join them to their neighbor under the mask.
+	#
+	myends<-rep(stringends,times=tmpshort[nrow(tmpshort),3])
+	mystarts<-rep(stringstarts,times=tmpshort[nrow(tmpshort),3])
+	# for the strings (patches) in a mask, determine the segments in the short table where these patches begin and where they end
+	startsegs<-sort(as.vector(sapply(stringstarts,where.are.we,short.table=tmpshort)))
+	endsegs<-sort(as.vector(sapply(stringends,where.are.we,short.table=tmpshort)))
+	# find segments where a string starts but no string ends, and those where a string ends but no string starts. Hence there is only one string
+	# overlapping such a segment.
+	startonly<-!is.element(startsegs,endsegs)
+	endonly<-!is.element(endsegs,startsegs)
+	# Find probe indices for segment start and end positions in tmpshort
+	bottom<-min(tmpshort[,3])
+	maxind<-sum(tmpshort[tmpshort[,3]==bottom,2])
+	endprobes<-(cumsum(tmpshort[,2])-1)%%maxind+1
+	startprobes<-c(0,cumsum(tmpshort[,2])[-nrow(tmpshort)])%%maxind+1
+	# find segments that begin together with mask patches
+	startsegred<-startsegs[startonly]
+	endsegred<-endsegs[startonly]
+	endatend<-endprobes[endsegred]==myends[startonly]
+	startatstart<-startprobes[startsegred]==mystarts[startonly]
+	# join segments starting with the mask to their right neighbors
+	if(length(which(startatstart & (!endatend)))>0){
+		tmpshort[endsegred[startatstart & (!endatend)],2]<-
+			tmpshort[endsegred[startatstart & (!endatend)],2]+tmpshort[startsegred[startatstart & (!endatend)],2]
+		tmpshort[startsegred[startatstart & (!endatend)],2]<-0
+	}
+	# find segments that end together with mask patches
+	startsegred<-startsegs[endonly]
+	endsegred<-endsegs[endonly]
+	endatend<-endprobes[endsegred]==myends[endonly]
+	startatstart<-startprobes[startsegred]==mystarts[endonly]
+	# join segments ending with the mask to their left neighbors
+	if(length(which((!startatstart) & endatend))>0){
+		tmpshort[startsegred[(!startatstart) & endatend],2]<-
+			tmpshort[startsegred[(!startatstart) & endatend],2]+tmpshort[endsegred[(!startatstart) & endatend],2]
+		tmpshort[endsegred[(!startatstart) & endatend],2]<-0
+	}
+	# update tmpshort
+	tmpshort<-tmpshort[tmpshort[,2]!=0,]
+	#
+	# Step 3: if two segments in a row form a mask patch, join them each to its immediate neighbor outside patch. If the patch
+	# begins or ends at a chromosome boundary, join both segments to the neighbor on the other side of the patch. If both sides
+	# of the patch are chromosome boundaries, set both segments to ground.
+	#
+	# for the strings (patches) in a mask, determine the segments in the short table where these patches begin and where they end
+	startsegs<-sort(as.vector(sapply(stringstarts,where.are.we,short.table=tmpshort)))
+	endsegs<-sort(as.vector(sapply(stringends,where.are.we,short.table=tmpshort)))
+	# select only strings that start and end at neighboring segments
+	oneonly<-!(is.element(startsegs,endsegs)|is.element(endsegs,startsegs))
+	startsegred<-startsegs[oneonly]
+	endsegred<-endsegs[oneonly]
+	endprobes<-(cumsum(tmpshort[,2])-1)%%maxind+1
+	startprobes<-c(0,cumsum(tmpshort[,2])[-nrow(tmpshort)])%%maxind+1
+	endatend<-is.element(endprobes[endsegred],stringends)
+	startatstart<-is.element(startprobes[startsegred],stringstarts)
+	# find segment numbers in tmpshort for pairs of segments that form patches
+	startsegred<-startsegred[startatstart & endatend]
+	endsegred<-endsegred[startatstart & endatend]
+	# find probe indices for chromosome start positions
+	chromstarts<-c(1,chromends[-length(chromends)]+1)
+	# find which segments in the reduced list begin or end at chromosome boundaries
+	startatchrom<-is.element(startprobes[startsegred],chromstarts)
+	endatchrom<-is.element(endprobes[endsegred],chromends)
+	# pairs neither beginning nor ending at chromosome boundaries
+	if(length(which((!startatchrom) & (!endatchrom)))!=0){
+		tmpshort[startsegred[(!startatchrom) & (!endatchrom)]-1,2]<-
+			tmpshort[startsegred[(!startatchrom) & (!endatchrom)]-1,2]+tmpshort[startsegred[(!startatchrom) & (!endatchrom)],2]
+		tmpshort[startsegred[(!startatchrom) & (!endatchrom)],2]<-0
+		tmpshort[endsegred[(!startatchrom) & (!endatchrom)]+1,2]<-
+			tmpshort[endsegred[(!startatchrom) & (!endatchrom)]+1,2]+tmpshort[endsegred[(!startatchrom) & (!endatchrom)],2]
+		tmpshort[endsegred[(!startatchrom) & (!endatchrom)],2]<-0
+	}
+	# pairs beginning but not ending at chromosome boundaries
+	if(length(which(startatchrom & (!endatchrom)))!=0){
+		tmpshort[endsegred[startatchrom & (!endatchrom)]+1,2]<-tmpshort[startsegred[startatchrom & (!endatchrom)],2]+
+			tmpshort[endsegred[startatchrom & (!endatchrom)]+1,2]+tmpshort[endsegred[startatchrom & (!endatchrom)],2]
+		tmpshort[startsegred[startatchrom & (!endatchrom)],2]<-0
+		tmpshort[endsegred[startatchrom & (!endatchrom)],2]<-0
+	}
+	# pairs ending but not beginning at chromosome boundaries
+	if(length(which((!startatchrom) & endatchrom))!=0){
+		tmpshort[startsegred[(!startatchrom) & endatchrom]-1,2]<-tmpshort[startsegred[(!startatchrom) & endatchrom],2]+
+			tmpshort[startsegred[(!startatchrom) & endatchrom]-1,2]+tmpshort[endsegred[(!startatchrom) & endatchrom],2]
+		tmpshort[startsegred[(!startatchrom) & endatchrom],2]<-0
+		tmpshort[endsegred[(!startatchrom) & endatchrom],2]<-0
+	}
+	# pairs beginning and ending at chromosome boundaries
+	if(length(which(startatchrom & endatchrom))!=0){
+		tmpshort[startsegred[startatchrom & endatchrom],2]<-
+			tmpshort[startsegred[startatchrom & endatchrom],2]+tmpshort[endsegred[startatchrom & endatchrom],2]
+		tmpshort[endsegred[startatchrom & endatchrom],2]<-0
+		tmpshort[startsegred[startatchrom & endatchrom],1]<-ground
+	}
+	# update tmpshort
+	tmpshort<-tmpshort[tmpshort[,2]!=0,]
+	#
+	# Step 4: if a segment completely coincides with a patch and does not start or end at a chromosome boundary, join it randomly
+	# to a neighbor. If it starts or ends at a boundary, join it to the neighbor within the chromosome. If the segment (patch) coincides 
+	# with a chromosome, set it to ground.
+	#
+	# for the strings (patches) in a mask, determine the segments in the short table where these patches begin and where they end
+	startsegs<-sort(as.vector(sapply(stringstarts,where.are.we,short.table=tmpshort)))
+	endsegs<-sort(as.vector(sapply(stringends,where.are.we,short.table=tmpshort)))
+	# select only strings that start and end at the same segment
+	segred<-startsegs[which(endsegs==startsegs)]
+	# important: pick segments containing only one string!
+	segredels<-intersect(min(segred):max(segred),segred)
+	segred<-setdiff(segredels,segred[-match(segredels,segred)])
+	endprobes<-(cumsum(tmpshort[,2])-1)%%maxind+1
+	startprobes<-c(0,cumsum(tmpshort[,2])[-nrow(tmpshort)])%%maxind+1
+	endatend<-is.element(endprobes[segred],stringends)
+	startatstart<-is.element(startprobes[segred],stringstarts)
+	segred<-segred[startatstart & endatend]
+	chromstarts<-c(1,chromends[-length(chromends)]+1)
+	startatchrom<-is.element(startprobes[segred],chromstarts)
+	endatchrom<-is.element(endprobes[segred],chromends)
+	# segments neither starting nor ending at a chromosome boundary
+	if(length(which((!startatchrom) & (!endatchrom)))!=0){
+		#
+		# alternative heuristics, similar to step 1 
+		gotostart<-floor(tmpshort[segred[(!startatchrom) & (!endatchrom)],2]*runif(length(segred[(!startatchrom) & (!endatchrom)]))+0.5)
+		gotoend<-tmpshort[segred[(!startatchrom) & (!endatchrom)],2]-gotostart # this portion goes to the end segment
+		tmpshort[segred[(!startatchrom) & (!endatchrom)]-1,2]<-tmpshort[segred[(!startatchrom) & (!endatchrom)]-1,2]+gotostart
+		tmpshort[segred[(!startatchrom) & (!endatchrom)]+1,2]<-tmpshort[segred[(!startatchrom) & (!endatchrom)]+1,2]+gotoend
+		#
+		#wheretogo<-sample(c(-1,1),size=length(segred),replace=T)
+		#if(length(which((!startatchrom) & (!endatchrom) & (wheretogo==1)))!=0)
+		#tmpshort[segred[(!startatchrom) & (!endatchrom) & (wheretogo==1)]+1,2]<-
+		#	tmpshort[segred[(!startatchrom) & (!endatchrom) & (wheretogo==1)]+1,2]+tmpshort[segred[(!startatchrom) & (!endatchrom) & (wheretogo==1)],2]
+		#if(length(which((!startatchrom) & (!endatchrom) & (wheretogo==(-1))))!=0)
+		#tmpshort[segred[(!startatchrom) & (!endatchrom) & (wheretogo==(-1))]-1,2]<-
+		#	tmpshort[segred[(!startatchrom) & (!endatchrom) & (wheretogo==(-1))]-1,2]+tmpshort[segred[(!startatchrom) & (!endatchrom) & (wheretogo==(-1))],2]
+		#
+		tmpshort[segred[(!startatchrom) & (!endatchrom)],2]<-0
+	}
+	# segments not starting but ending at a chromosome boundary
+	if(length(which((!startatchrom) & endatchrom))!=0){
+		tmpshort[segred[(!startatchrom) & endatchrom]-1,2]<-
+			tmpshort[segred[(!startatchrom) & endatchrom]-1,2]+tmpshort[segred[(!startatchrom) & endatchrom],2]
+		tmpshort[segred[(!startatchrom) & endatchrom],2]<-0
+	}
+	# segments starting but not ending at a chromosome boundary
+	if(length(which(startatchrom & (!endatchrom)))!=0){
+		tmpshort[segred[startatchrom & (!endatchrom)]+1,2]<-
+			tmpshort[segred[startatchrom & (!endatchrom)]+1,2]+tmpshort[segred[startatchrom & (!endatchrom)],2]
+		tmpshort[segred[startatchrom & (!endatchrom)],2]<-0
+	}
+	# segments covering a chromosome
+	if(length(which(startatchrom & endatchrom))!=0)	tmpshort[segred[startatchrom & endatchrom],1]<-ground
+	# return the result
+	return(tmpshort[tmpshort[,2]!=0,])
+}
+
+# A simplified version of masking, in which masked patches are replaced with the ground state (0 if logs, 1 otherwise). Added by AK.
+apply.cnpmask.simple<-function(short.table,stringstarts,stringends,chromends,logs=F){
+	#bt<-proc.time()
+	otherends<-(stringstarts-1)[stringstarts>1 & !is.element(stringstarts-1,stringends)]
+	otherchroms<-chromends[!is.element(chromends,c(stringends,otherends))]
+	column1<-c(rep(1,length(otherends)+length(otherchroms)),rep(0,length(stringends)))
+	allends<-sort(c(otherends,otherchroms,stringends))
+	column2<-allends-c(0,allends[-length(allends)])
+	column1<-column1[order(c(otherends,otherchroms,stringends))]
+	nexp<-short.table[nrow(short.table),3]
+	fake.shorty<-cbind(rep(column1,nexp),rep(column2,nexp),rep(1:nexp,each=length(allends)))
+	dimnames(fake.shorty)<-list(NULL,NULL)
+	fake.shorty<-simplify.shorty(fake.shorty,boundaries=chromends)
+	tmpshort<-short.table[,1:3]
+	tmpshort<-simplify.shorty(tmpshort,boundaries=chromends)
+	if(!logs)tmpshort[,1]<-log(tmpshort[,1])
+	#cat(proc.time()-bt,"\ttime elapsed\n")
+	#bt<-proc.time()
+	masked.shorty<-compose.shorties(tmpshort,fake.shorty,"multiply",boundaries=chromends)
+	masked.shorty<-simplify.shorty(masked.shorty,boundaries=chromends)
+	if(!logs)masked.shorty[,1]<-exp(masked.shorty[,1])
+	#cat(proc.time()-bt,"\ttime elapsed\n")
+	return(masked.shorty)
+	#return(fake.shorty)
+}
+
+# Multiply or add two short tables, i.e., given two short tables (such that the corresponding long tables have equal dimensions), return a short table whose long table is a product of
+# (sum of) the two input long tables (added by AK). Here action="multiply"|"add".
+compose.shorties<-function(shorty1,shorty2,action,boundaries=NULL){
+	#
+	# first do a few sanity checks
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(shorty1,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n") 
+			return()}
+		ci<-verify.chromo.integrity(shorty2,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	if(shorty1[nrow(shorty1),3]!=shorty2[nrow(shorty2),3]){ cat("Unequal number of cases in factor shorties\n")
+		 return()}
+	if(sum(shorty1[,2])!=sum(shorty2[,2])){ cat("Unequal long table row dimensions in factor shorties\n")
+		 return()}
+	#
+	ends1<-cumsum(shorty1[,2])
+	ends2<-cumsum(shorty2[,2])
+	norepeats<-!is.element(ends2,ends1)
+	if(sum(norepeats)>0){
+		tmp<-shorty2[norepeats,]
+		ends2<-ends2[norepeats]
+		#allends<-sort(c(ends1,ends2))
+		orderends<-order(c(ends1,ends2))
+		allends<-c(ends1,ends2)[orderends]
+		prod.shorty<-rbind(shorty1,tmp)[orderends,]
+		prod.shorty[,2]<-allends-c(0,allends[-length(allends)])
+	}
+	else{
+		allends<-ends1
+		prod.shorty<-shorty1
+	}
+	# The following two lines may need to be sped up. To this end, note that, in sorting c(z,zz), elements of z will be to the left of those of zz in case of a draw.
+	#pos1<-sapply(allends,where.am.i,short.table=shorty1)
+	#pos2<-sapply(allends,where.am.i,short.table=shorty2)
+	#Here is an alternative 
+	index<-c(rep(0,length(allends)),rep(1,nrow(shorty1)))
+	moreends<-c(allends,ends1)
+	index<-index[order(moreends)]
+	cumindex<-cumsum(index)
+	pos1<-cumindex[index==0]+1
+	index<-c(rep(0,length(allends)),rep(1,nrow(shorty2)))
+	ends2<-cumsum(shorty2[,2])
+	moreends<-c(allends,ends2)
+	index<-index[order(moreends)]
+	cumindex<-cumsum(index)
+	pos2<-cumindex[index==0]+1
+	#cat(length(pos1),length(pos2),Dim(shorty1),Dim(shorty2),max(pos1),min(pos1),max(pos2),min(pos2),"\n")
+	if(action=="multiply")prod.shorty[,1]<-shorty1[pos1,1]*shorty2[pos2,1]
+	else if (action=="add")prod.shorty[,1]<-shorty1[pos1,1]+shorty2[pos2,1]
+	else { cat("Unknown action\n") 
+		return()}		
+	return(prod.shorty)
+}
+
+global.cnp.measures<-function(short.table,thresh,lesion){
+	nexp<-short.table[nrow(short.table),3]
+	if(lesion=="amp")cnptruth<-short.table[,1]>thresh
+	else cnptruth<-short.table<thresh
+	cnps.per.exp<-sum(cnptruth)/nexp
+	avlen<-sum(short.table[cnptruth,2])/nexp
+	return(c(cnps.per.exp,avlen))
+}
+
+# Given a short table and a sequence from minmax through maxmax by count.inc, determine how many amplification (deletion) loci in the table have frequency no less than each
+# number in the sequence (added by AK). First, a utility called by the main function.
+patchmax<-function(fromto,countvec){return(max(countvec[fromto[1]:fromto[2]]))}
+cnp.frequency.stats<-function(short.table,thresh,where,low.count,high.count,boundaries=NULL,minmax=1,maxmax=0,count.inc=1){
+	z<-short.table
+	if(maxmax==0)maxmax<-z[nrow(z),3]
+	if(where=="above"){z[,1]<-ifelse(z[,1]>thresh,z[,1],1)
+		 lesion<-"amp"}
+	else {z[,1]<-ifelse(z[,1]<thresh,z[,1],1) 
+		lesion<-"del"}
+	z<-simplify.shorty(z,boundaries)
+	allsegs<-all.segends(z,boundaries)
+	cflat<-flat.to.shorty(allsegs,z)
+	allev<-events.in.shorty(z,thresh,lesion,boundaries)
+	eflat<-matrix(allev[cflat],nrow=nrow(cflat),ncol=ncol(cflat))
+	if(sum(eflat)==0)return(rep(0,maxmax)[seq(from=minmax,to=maxmax,by=count.inc)])
+	zz<-make.cnpmask.fast(eflat,allsegs,low.count,high.count,boundaries)
+	segcounts<-colSums(eflat)
+	fromto<-matrix(nrow=length(zz$stringstarts),ncol=2)
+	fromto[,2]<-match(zz$stringends,allsegs)
+	fromto[,1]<-match(zz$stringstarts,c(1,allsegs[-length(allsegs)]+1))
+	maxcounts<-apply(fromto,1,patchmax,countvec=segcounts)
+	rsm<-rev(sort(maxcounts))
+	ursm<-unique(rsm)
+	aboveme<-match(ursm,rsm)-1
+	meandabove<-c(aboveme[-1],length(rsm))
+	allmycounts<-rep(0,nrow(eflat))
+	allmycounts[ursm]<-meandabove
+	allmycounts<-rev(cummax(rev(allmycounts)))
+	return(allmycounts[seq(from=minmax,to=maxmax,by=count.inc)])
+}
+
+# For each experiment in a short table, count discontinuities above threshold (added by AK).
+count.jumps<-function(short.table,thresh){
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	expends<-which(cumsum(short.table[,2])%%maxind==0)
+	expbegs<-c(1,expends[-length(expends)]+1)
+	shifted<-c(0,short.table[-nrow(short.table),1])
+	shifted[expbegs]<-0
+	cjumps<-cumsum(ifelse(abs(short.table[,1]-shifted)>thresh,1,0))
+	return(cjumps[expends]-c(0,cjumps[expends[-length(expends)]]))
+}
+
+# Added by AK. This is a vector version of where.am.i. Given an indx from a long.table, 
+# return a vector of segment indices in short.table (one index per experiment). 
+where.are.we<-function(indx,short.table){
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	x<-(cumsum(short.table[,2])-1)%%maxind+1
+	y<-x-short.table[,2]+1
+	return(which(y<=indx & x>=indx))
+}
+
+# Simplify a short table by joining adjacent segments whose readings differ by less than eps. If boundaries are provided, there will be no joining across a boundary (added by AK). 
+simplify.shorty<-function(short.table,boundaries=NULL,eps=0.000001){
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	ends<-(cumsum(short.table[,2])-1)%%maxind+1
+	remain<-c(abs(short.table[-1,1]-short.table[-nrow(short.table),1])>eps,T)|ends==maxind
+	if(length(boundaries)>0)remain<-remain|is.element(ends,boundaries)
+	simple.shorty<-short.table[remain,]
+	cumends<-cumsum(short.table[,2])
+	simple.shorty[,2]<-cumends[remain]-c(0,(cumends[remain])[-sum(remain)])
+	return(simple.shorty)
+}
+
+# Added by AK. This is a vector version of have.i.a.peak. Given an indx from a long.table,
+# return a logical vector indicating which experiments are peaked at 
+# that indx. An additional required argument is lesion (= "amp" or "del", self-explanatory)
+# (UNFINISHED!)  
+have.we.a.peak<-function(indx,short.table,thresh,lesion,boundaries=NULL){
+	if(lesion=="amp")flip<-1
+	else flip<-(-1)
+	#flip<-ifelse(lesion=="amp",1,-1)
+	thresh<-thresh*flip
+	tmp<-short.table
+	tmp[,1]<-tmp[,1]*flip
+	positions<-where.are.we(indx,tmp)
+	allpeaks<-peaks(tmp[,1])[positions]
+	allstarts<-chromos.in.shorty.starts(tmp,boundaries)
+	allends<-chromos.in.shorty.ends(tmp,boundaries)
+	rightstarts<-c(allstarts[-1],0)[positions]
+	leftends<-c(0,allends[-length(allends)])[positions]
+	interior<-(rightstarts==leftends)
+	#first.special<-c(0,tmp[-nrow(tmp),3])!=tmp[,3] & c(tmp[-1,1],500)<tmp[,1]
+	first.special<-(c(0,tmp[-nrow(tmp),3])!=tmp[,3])[positions]
+	#last.special<-c(tmp[-1,3],0)!=tmp[,3] & c(500,tmp[-nrow(tmp),1])<tmp[,1]
+	last.special<-(c(tmp[-1,3],0)!=tmp[,3])[positions]
+	value.above<-(tmp[,1]>thresh)[positions]
+	#return(ifelse((allpeaks | first.special | last.special)[positions] & tmp[positions,1]>thresh,1,0))
+	return(allpeaks & !first.special & !last.special & value.above & interior)
+}
+
+# Given a short table, a threshold, a lesion type ("amp"|"del"), and an optional list of boundaries, return a truth vector of whether lines in short.table correspond
+# to maxima ("amp") or minima ("del"), separately for each experiment and in the interior w.r.t. boundaries. However, if endpoints=T, one-sided extrema at boundaries
+# are accepted (added by AK). 
+peaks.in.shorty<-function(short.table,thresh,lesion,endpoints=T,boundaries=NULL){
+	if(lesion=="amp")flip<-1
+	else flip<-(-1)
+	thresh<-thresh*flip
+	tmp<-short.table[,1]*flip
+	allpeaks<-peaks(tmp)
+	# a truth vector of not being the first line for any experiment
+	tmpcond<-(c(0,short.table[-nrow(short.table),3])==short.table[,3])
+	allpeaks<-allpeaks & tmpcond
+	# a truth vector for not being the last line for any experiment
+	tmpcond<-(c(short.table[-1,3],0)==short.table[,3])
+	allpeaks<-allpeaks & tmpcond
+	#if no chromosome boundaries are supplied, make last probe in every exp. a boundary
+	if(length(boundaries)==0)boundaries<-sum(short.table[short.table[,3]==1,2])
+	if(length(boundaries)>0){
+		#mystarts<-chromos.in.shorty.starts(short.table,boundaries)
+		mystarts<-chromos.in.shorty.starts(short.table,boundaries)+short.table[,3]*length(boundaries)
+		rightstarts<-c(mystarts[-1],(max(short.table[,3])+1)*length(boundaries)+1) 
+		#myends<-chromos.in.shorty.ends(short.table,boundaries)
+		myends<-chromos.in.shorty.ends(short.table,boundaries)+short.table[,3]*length(boundaries)
+		leftends<-c(0,myends[-length(myends)])
+		# a truth vector of being in the interior w.r.t. boundaries
+		tmpcond<-(rightstarts==leftends)
+		allpeaks<-allpeaks & tmpcond
+		if(endpoints){
+			#print("endpoints true")
+			ci<-sum(mystarts!=myends)
+			if(ci!=0){ cat("Chromosome integrity breached ",ci," times\n") 
+				return()}
+			allpeaks<-allpeaks|(mystarts>leftends & mystarts==rightstarts & tmp>c(tmp[-1],0)) # a special condition for left boundaries
+			#print(sum(mystarts>leftends & mystarts==rightstarts & tmp>c(tmp[-1],0)))
+			allpeaks<-allpeaks|(myends<rightstarts & myends==leftends & tmp>c(0,tmp[-length(tmp)])) # a special condition for right boundaries
+			#print(sum(myends<rightstarts & myends==leftends & tmp>c(0,tmp[-length(tmp)])))
+			allpeaks<-allpeaks|(mystarts>leftends & myends<rightstarts) # a special condition if I span all the space between boundaries (the threshold is verified below)
+		}
+	}
+	#a truth vector for being above threshold
+	tmpcond<-(tmp>thresh)
+	allpeaks<-allpeaks & tmpcond
+	return(allpeaks)	
+}
+
+
+# Return a truth vector for segments in short.table being above ("amp") or below ("del") thresh. Exit on chromosome integrity breach (added by AK).  
+events.in.shorty<-function(short.table,thresh,lesion,boundaries=NULL){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	if(lesion=="amp")return(short.table[,1]>thresh)
+	else return(short.table[,1]<thresh)
+}
+
+# For every experiment in a short table compute a sum of inverse distances between consecutive discontinuities above threshold. Experiment and chromosome boundaries are
+# considered discontinuiuties (added by AK). 
+jump.rate.in.shorty<-function(short.table,thresh,boundaries=NULL,logs=T){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	# every segment preceding a discontinuity is marked an event
+	if(!logs)events<-abs(short.table[,1]-c(short.table[-1,1],-1000))>thresh
+	else events<-abs(log(short.table[,1])-log(c(short.table[-1,1],0.00001)))>thresh
+	# every end of an experiment is marked an event
+	tmpcond<-short.table[,3]!=c(short.table[-1,3],0)
+	events<-events|tmpcond
+	if(length(boundaries)!=0){
+		chstarts<-chromos.in.shorty.starts(short.table,chromends=boundaries)
+		tmpcond<-chstarts!=c(chstarts[-1],0)
+		events<-events|tmpcond
+	}
+	intervals<-cumsum(short.table[,2])[events]
+	intervals<-intervals-c(0,intervals[-length(intervals)])
+	intervals<-1/intervals
+	labels<-short.table[events,3]
+	endexp<-labels!=c(labels[-1],0)
+	intervals<-cumsum(intervals)
+	intervals<-intervals[endexp]
+	return(intervals-c(0,intervals[-length(intervals)]))
+}
+
+# For every experiment in a short table compute a sum of inverse average distances from a discontinuity above threshold to neighboring 
+# discontinuities above threshold. Experiment and chromosome boundaries are considered discontinuiuties (added by AK). This is a refined version of the above. 
+refined.jump.rate.in.shorty<-function(short.table,thresh,boundaries=NULL,logs=T){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	# every segment preceding a discontinuity is marked an event
+	if(!logs)events<-abs(short.table[,1]-c(short.table[-1,1],-1000))>thresh
+	else events<-abs(log(short.table[,1])-log(c(short.table[-1,1],0.00001)))>thresh
+	# every end of an experiment is marked an event
+	tmpcond<-short.table[,3]!=c(short.table[-1,3],0)
+	true.events<-events&(!tmpcond)
+	events<-events|tmpcond
+	if(length(boundaries)!=0){ # every chromosome boundary is marked an event
+		chstarts<-chromos.in.shorty.starts(short.table,chromends=boundaries)
+		tmpcond<-chstarts!=c(chstarts[-1],0)
+		events<-events|tmpcond
+		true.events<-true.events&(!tmpcond) # true.events are all the events excluding all the boundaries, so a true.event is always in the interior
+	}
+	intervals<-cumsum(short.table[,2])[events]
+	true.events.reduced<-true.events[events]
+	intervals<-intervals-c(0,intervals[-length(intervals)])
+	intervals[true.events.reduced]<-2/(intervals[true.events.reduced]+intervals[which(true.events.reduced)+1])
+	intervals[!true.events.reduced]<-0
+	labels<-short.table[events,3]
+	endexp<-labels!=c(labels[-1],0)
+	intervals<-cumsum(intervals)
+	intervals<-intervals[endexp]
+	return(intervals-c(0,intervals[-length(intervals)]))
+}
+
+# For every experiment in a short table compute a sum of inverse average distances from a discontinuity above threshold to neighboring 
+# discontinuities above threshold times abs(discontinuity). Experiment and chromosome boundaries are considered discontinuiuties (added by AK). 
+# This is an even more refined version of the above. 
+weighed.jump.rate.in.shorty<-function(short.table,boundaries=NULL){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	# every segment is marked an event
+	events<-rep(T,nrow(short.table))
+	# every end of an experiment is marked an event
+	tmpcond<-short.table[,3]!=c(short.table[-1,3],0)
+	true.events<-events&(!tmpcond)
+	events<-events|tmpcond
+	if(length(boundaries)!=0){ # every chromosome boundary is marked an event
+		chstarts<-chromos.in.shorty.starts(short.table,chromends=boundaries)
+		tmpcond<-chstarts!=c(chstarts[-1],0)
+		events<-events|tmpcond
+		true.events<-true.events&(!tmpcond) # true.events are all the events excluding all the boundaries, so a true.event is always in the interior
+	}
+	absdifs<-abs(short.table[,1]-c(short.table[-1,1],0))[events]
+	intervals<-cumsum(short.table[,2])[events]
+	true.events.reduced<-true.events[events]
+	intervals<-intervals-c(0,intervals[-length(intervals)])
+	intervals[true.events.reduced]<-2*absdifs[true.events.reduced]/(intervals[true.events.reduced]+intervals[which(true.events.reduced)+1])
+	intervals[!true.events.reduced]<-0
+	labels<-short.table[events,3]
+	endexp<-labels!=c(labels[-1],0)
+	intervals<-cumsum(intervals)
+	intervals<-intervals[endexp]
+	return(intervals-c(0,intervals[-length(intervals)]))
+}
+
+# For every segment in a short table determine whether it ends in a discontinuity above threshold in the inerior (added by AK). 
+jumps.in.shorty<-function(short.table,thresh,boundaries=NULL,logs=T){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	# every segment preceding a discontinuity is marked an event
+	if(!logs)events<-abs(short.table[,1]-c(short.table[-1,1],-1000))>thresh
+	else events<-abs(log(short.table[,1])-log(c(short.table[-1,1],0.00001)))>thresh
+	# every end of an experiment is marked an event
+	tmpcond<-short.table[,3]!=c(short.table[-1,3],0)
+	true.events<-events&(!tmpcond)
+	if(length(boundaries)!=0){ # every chromosome boundary is marked an event
+		chstarts<-chromos.in.shorty.starts(short.table,chromends=boundaries)
+		tmpcond<-chstarts!=c(chstarts[-1],0)
+		true.events<-true.events&(!tmpcond) # true.events are all the events excluding all the boundaries, so a true.event is always in the interior
+	}
+	return(true.events)
+}
+
+# For every segment in a short table determine whether it ends in a discontinuity above threshold of a specified kind in the inerior (added by AK). 
+evbounds.in.shorty<-function(short.table,thresh,lesion,dir,boundaries=NULL,logs=T,tiny=0.001){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	tmpshort<-short.table
+	if(logs)tmpshort[,1]<-log(tmpshort[,1])
+	if(lesion=="amp")tmpshort[,1]<-ifelse(tmpshort[,1]>tiny,tmpshort[,1],0)
+	if(lesion=="del")tmpshort[,1]<-ifelse(tmpshort[,1]<(-tiny),tmpshort[,1],0)
+	# every segment preceding a discontinuity is marked an event
+	if(dir=="up")events<-c(tmpshort[-1,1],1000)-tmpshort[,1]>thresh
+	if(dir=="down")events<-tmpshort[,1]-c(tmpshort[-1,1],-1000)>thresh
+	# every end of an experiment is marked an event
+	tmpcond<-tmpshort[,3]!=c(tmpshort[-1,3],0)
+	true.events<-events&(!tmpcond)
+	events<-events|tmpcond
+	if(length(boundaries)!=0){ # every chromosome boundary is marked an event
+		chstarts<-chromos.in.shorty.starts(tmpshort,chromends=boundaries)
+		tmpcond<-chstarts!=c(chstarts[-1],0)
+		true.events<-true.events&(!tmpcond) # true.events are all the events excluding all the boundaries, so a true.event is always in the interior
+	}
+	return(true.events)
+}
+
+# For every segment of a specified kind in a short table return its endpoint discontinuity if the segment ends in the inerior. 
+# Return 0 for all other segments (added by AK). 
+evbound.mags.in.shorty<-function(short.table,lesion,boundaries=NULL,logs=T,tiny=0){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Chromosome integrity breached ",ci," times\n")
+			 return()}
+	}
+	tmpshort<-short.table
+	if(logs)tmpshort[,1]<-log(tmpshort[,1])
+	if(lesion=="amp")tmpshort[,1]<-ifelse(tmpshort[,1]>tiny,tmpshort[,1],0)
+	if(lesion=="del")tmpshort[,1]<-ifelse(tmpshort[,1]<(-tiny),tmpshort[,1],0)
+	# every segment preceding a discontinuity is marked an event
+	events<-c(tmpshort[-1,1],1000)-tmpshort[,1]
+	# every end of an experiment is marked an event
+	tmpcond<-tmpshort[,3]!=c(short.table[-1,3],0)
+	events[tmpcond]<-0
+	if(length(boundaries)!=0){ # every chromosome boundary is marked an event
+		chstarts<-chromos.in.shorty.starts(tmpshort,chromends=boundaries)
+		tmpcond<-chstarts!=c(chstarts[-1],0)
+		events[tmpcond]<-0
+	}
+	return(events)
+}
+
+
+# Replace a short table by one with the 1st column of 1s, 0s or -1s, depending on where the original value is w.r.t. upper.thresh and lower.thresh. The resulting short table
+# may be smaller than the original one as some segments may merge. Warning: boundaries are not enforced! (added by AK)
+stratify.shorty<-function(short.table,upper.thresh,lower.thresh){
+	tmp<-short.table
+	center<-0.5*(upper.thresh+lower.thresh)
+	tmp[,1]<-ifelse(tmp[,1]>upper.thresh|tmp[,1]<lower.thresh,sign(tmp[,1]-center),0)
+	tmplong<-decompress.shorty(tmp)
+	return(get.shorty(tmplong))
+}
+	
+where.am.i<-
+function(indx,short.table){
+		#given an indx from a long.table, what is the segment index of short.table
+	x<-cumsum(short.table[,2])
+	finder<-x>=indx
+	y<-match(1,finder)
+	return(y)
+}
+
+have.i.a.peak<-
+function(indx,short.table, thresh.up){
+		#given an indx from a long.table,
+		#which experiments are peaked up at that indx
+		#note to apply to valleys, reverse sign or take reciprocal
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	tru.val<-rep(0,n.exp)
+	for (i in 1:n.exp){
+		shorter.table<-short.table[which(short.table[,3]==i),]
+		y<-where.am.i(indx,shorter.table)
+		val.y<-shorter.table[y,1] 
+		vals<-c(-1,shorter.table[,1],-1)
+		tru.val[i] <- 1*(val.y>=thresh.up & val.y > max(vals[y],vals[y+2]))
+	}
+	return(tru.val)
+}
+
+thresh.shorty<-
+function(short.table,thresh.up){
+	short.table[which(short.table[,1]<thresh.up),1]<-0
+	return(short.table)
+}
+
+am.i.at.least<-
+function(){
+	
+}
+
+# Given a short table and a list of boundaries not to cross, make a flat list of all the segment end positions in the long table (added by AK).
+all.segends<-function(short.table,boundaries=NULL){
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	x<-cumsum(short.table[,2])%%maxind
+	x[x==0]<-maxind
+	return(intersect(c(1:maxind),sort(union(x,boundaries))))
+}
+
+# Assign to all probes (indices in a long table) a segment index in a flat list of all segments (added by AK).
+assign.segs<-function(short.table,boundaries=NULL){
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	segbegs<-all.segends(short.table,boundaries)
+	segbegs<-c(1,segbegs[-length(segbegs)]+1)
+	segflag<-rep(0,maxind)
+	segflag[segbegs]<-1
+	return(cumsum(segflag))
+}
+
+all.segcenters<-function(short.table,boundaries=NULL){
+	if(length(boundaries)>0){
+		ci<-verify.chromo.integrity(short.table,chromends=boundaries)
+		if(ci>0){ cat("Found ",ci," chromosome integrity breaches\n")
+			 return() }
+	}
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	shortends<-(cumsum(short.table[,2])-1)%%maxind+1
+	shortbegs<-c(1,shortends[-length(shortends)])
+	shortcenters<-(shortends+shortbegs)%/%2
+	return(intersect(sort(shortcenters),c(1:maxind)))
+}
+
+# For every segment in a flat list and for every experiment, determine the number of the appropriate line in the short table (added by AK).
+flat.to.shorty<-function(segends,short.table){
+	return(sapply(segends,where.are.we,short.table=short.table))
+}
+
+# Return the maximal/minimal reading for each experiment in a short table
+# (added by AK).
+max.amp<-function(short.table,lesion,boundaries=NULL){
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	ampflat<-matrix(short.table[,1][flat],nrow=nrf,ncol=ncf)
+	if(lesion=="amp")return(apply(ampflat,1,max))
+	else return(apply(ampflat,1,min))
+}
+
+
+# Determine extremum counts for peaks (lesion="amp") or valleys (lesion="del") beyond thresh while respecting boundaries in short.table.
+# endpoints selects a rule for counting extrema and chromosome boundaries; if endpoints=T (default), these are counted (added by AK). 
+extreme.count<-function(short.table,thresh,lesion,endpoints=T,boundaries=NULL){
+	allpeaks<-peaks.in.shorty(short.table,thresh,lesion,endpoints=endpoints,boundaries=boundaries)
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	peakflat<-matrix(allpeaks[flat],nrow=nrf,ncol=ncf)
+	return(colSums(peakflat))
+}
+
+# Determine event counts for amplifications (lesion="amp") or deletions (lesion="del") beyond thresh while respecting boundaries in short.table (added by AK).
+event.count<-function(short.table,thresh,lesion,boundaries=NULL){
+	allevents<-events.in.shorty(short.table,thresh,lesion,boundaries=boundaries)
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	eventflat<-matrix(allevents[flat],nrow=nrf,ncol=ncf)
+	return(colSums(eventflat))
+}
+
+# Sum amplification (deletion) amplitudes within each group of equivalent probes and divide the resulting vector by the number of experiments.
+meanamp<-function(short.table,lesion,boundaries=NULL,logs=F){
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	amps<-short.table[,1]
+	if(logs)amps<-log(amps)
+	if(lesion=="amp")amps<-ifelse(amps>0,amps,0)
+	if(lesion=="del")amps<-ifelse(amps<0,amps,0)
+	ampflat<-matrix(amps[flat],nrow=nrf,ncol=ncf)
+	return(colSums(ampflat)/nrf)
+}	
+
+# For each group of equivalent probes determine overlap measures (smapo,smrpo,sxrpo,sooj) 
+# for lesions of a given type above a given threshold present at these probes (added by AK).
+overlap.measures<-function(short.table,type,thresh,lesion,boundaries=NULL,endpoints=T){
+	if(type=="events")allevents<-events.in.shorty(short.table,thresh,lesion,boundaries=boundaries)
+	if(type=="peaks")allevents<-peaks.in.shorty(short.table,thresh,lesion,boundaries=boundaries,endpoints=endpoints)
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	eventflat<-matrix(allevents[flat],nrow=nrf,ncol=ncf)
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	allends<-(cumsum(short.table[,2])-1)%%nprobes+1
+	allstarts<-c(1,allends[-length(allends)]+1)%%nprobes
+	endflat<-matrix(allends[flat],nrow=nrf,ncol=ncf)
+	startflat<-matrix(allstarts[flat],nrow=nrf,ncol=ncf)
+	allsegbegs<-c(1,allsegs[-ncf]+1)
+	evsums<-colSums(eventflat)
+	resultable<-matrix(nrow=ncf,ncol=6)
+	resultable[,1]<-allsegbegs
+	resultable[,2]<-allsegs
+	resultable[evsums<2,3:6]<-0
+	doit<-which(!(evsums<2))
+	for(i in doit){
+		mystarts<-startflat[eventflat[,i],i]
+		myends<-endflat[eventflat[,i],i]
+		resultable[i,3:6]<-c(smapo(mystarts,myends),smrpo(mystarts,myends),sxrpo(mystarts,myends),sooj(mystarts,myends))
+	}
+	return(resultable)
+}
+
+	
+# For each experiment determine the number of affected chromosomes (added by AK).
+bad.chromos.per.exp<-function(short.table,threshdown,threshup,boundaries){
+	allevents<-events.in.shorty(short.table,threshdown,"del",boundaries=boundaries)
+	allevents<-allevents | events.in.shorty(short.table,threshup,"amp",boundaries=boundaries)
+	allchroms<-chromos.in.shorty.ends(short.table,boundaries)*allevents
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	chromflat<-matrix(allchroms[flat],nrow=nrf,ncol=ncf)
+	return(colSums(apply(chromflat,1,is.element,el=c(1:22))))
+	#return(apply(chromflat,1,is.element,el=c(1:22)))
+}
+
+# Determine the number of peaks (lesion="amp") or valleys (lesion="del") beyond thresh while respecting boundaries for each experiment in short.table (added by AK)
+extremes.per.exp<-function(short.table,thresh,lesion,boundaries=NULL,endpoints=T){
+	allpeaks<-peaks.in.shorty(short.table,thresh,lesion,boundaries=boundaries,endpoints=endpoints)
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	expends<-which(cumsum(short.table[,2])%%maxind==0)
+	nexp<-length(expends)
+	callpeaks<-cumsum(allpeaks)[expends]
+	return(callpeaks-c(0,callpeaks[-nexp]))
+}
+
+# Determine the number of amps (lesion="amp") or dels (lesion="del") beyond thresh while respecting boundaries for each experiment in short.table (added by AK)
+events.per.exp<-function(short.table,thresh,lesion,boundaries=NULL){
+	allevents<-events.in.shorty(short.table,thresh,lesion,boundaries=boundaries)
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	expends<-which(cumsum(short.table[,2])%%maxind==0)
+	nexp<-length(expends)
+	callevents<-cumsum(allevents)[expends]
+	return(callevents-c(0,callevents[-nexp]))
+}
+
+# Determine the number of discontinuities above threshold while respecting boundaries for each experiment in short.table (added by AK).
+jumps.per.exp<-function(short.table,thresh, boundaries=NULL,logs=T){
+	alljumps<-jumps.in.shorty(short.table,thresh,boundaries=boundaries,logs=logs)
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	expends<-which(cumsum(short.table[,2])%%maxind==0)
+	nexp<-length(expends)
+	calljumps<-cumsum(alljumps)[expends]
+	return(calljumps-c(0,calljumps[-nexp]))
+}
+
+# Determine the discontinuity deficit for a given type of lesions beyond threshold for each experiment in short.table (added by AK).
+discontinuity.deficit<-function(short.table,thresh,lesion,boundaries=NULL,logs=T){
+	tmpshort<-short.table
+	if(logs==T)tmpshort[,1]<-log(tmpshort[,1])
+	if(lesion=="amp")tmpshort[,1]<-pmax(tmpshort[,1],rep(0,nrow(tmpshort)))
+	else tmpshort[,1]<-pmin(tmpshort[,1],rep(0,nrow(tmpshort)))
+	tmpshort[,1]<-abs(tmpshort[,1])
+	thresh<-abs(thresh)
+	tmpshort[tmpshort[,1]<abs(thresh),1]<-0
+	tmpshort[,1]<-floor(tmpshort[,1]/thresh+0.5)
+	ecounts<-events.per.exp(tmpshort,thresh,"amp",boundaries=boundaries)
+	jcounts<-jumps.per.exp(tmpshort,abs(thresh),boundaries=boundaries,logs=F)
+	allevents<-events.in.shorty(tmpshort,thresh,"amp",boundaries=boundaries)
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[tmpshort[,3]==bottom,2])
+	expends<-which(cumsum(tmpshort[,2])%%maxind==0)
+	nexp<-length(expends)
+	evends<-(cumsum(tmpshort[,2])-1)%%maxind+1
+	atend<-is.element(evends,boundaries)
+	callatend<-cumsum(allevents & atend)[expends]
+	endcounts<-callatend-c(0,callatend[-nexp])
+	evstarts<-evends-tmpshort[,2]+1
+	bstarts<-c(1,boundaries[-length(boundaries)]+1)
+	atstart<-is.element(evstarts,bstarts)
+	callatstart<-cumsum(allevents & atstart)[expends]
+	startcounts<-callatstart-c(0,callatstart[-nexp])
+	print(ecounts)
+	print(jcounts)
+	print(endcounts)
+	print(startcounts)
+	return(2*ecounts-jcounts-endcounts-startcounts)
+}	
+
+# Determine the number of events without ground contact for a given type of lesions beyond threshold for each experiment in short.table (added by AK).
+ground.contact.deficit<-function(short.table,thresh,lesion,boundaries=NULL,logs=T){
+	tmpshort<-short.table
+	if(logs==T)tmpshort[,1]<-log(tmpshort[,1])
+	if(lesion=="amp")tmpshort[,1]<-pmax(tmpshort[,1],rep(0,nrow(tmpshort)))
+	else tmpshort[,1]<-pmin(tmpshort[,1],rep(0,nrow(tmpshort)))
+	tmpshort[,1]<-abs(tmpshort[,1])
+	thresh<-abs(thresh)
+	tmpshort[tmpshort[,1]<abs(thresh),1]<-0
+	tmpshort[,1]<-floor(tmpshort[,1]/thresh+0.5)
+	ecounts<-events.per.exp(tmpshort,thresh,"amp",boundaries=boundaries)
+	alljumps<-jumps.in.shorty(tmpshort,thresh,boundaries=boundaries,logs=F) & tmpshort[,1]==0 #all the discontinuities in the interior starting from ground   
+	allevents<-events.in.shorty(tmpshort,thresh,"amp",boundaries=boundaries)
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[tmpshort[,3]==bottom,2])
+	expends<-which(cumsum(tmpshort[,2])%%maxind==0)
+	nexp<-length(expends)
+	calljumps<-cumsum(alljumps)[expends]
+	jcounts<-calljumps-c(0,calljumps[-nexp])
+	evends<-(cumsum(tmpshort[,2])-1)%%maxind+1
+	evstarts<-evends-tmpshort[,2]+1
+	bstarts<-c(1,boundaries[-length(boundaries)]+1)
+	atstart<-is.element(evstarts,bstarts)
+	callatstart<-cumsum(allevents & atstart)[expends]
+	startcounts<-callatstart-c(0,callatstart[-nexp])
+	print(ecounts)
+	print(jcounts)
+	print(startcounts)
+	return(ecounts-jcounts-startcounts)
+}
+ 
+# Determine the number of probes in amps (lesion="amp") or in dels (lesion="del") beyond thresh while respecting boundaries for each experiment in short.table (added by AK)
+probes.in.events.per.exp<-function(short.table,thresh,lesion,boundaries=NULL){
+	allevents<-events.in.shorty(short.table,thresh,lesion,boundaries=boundaries)
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	expends<-which(cumsum(short.table[,2])%%maxind==0)
+	nexp<-length(expends)
+	callevents<-cumsum(short.table[,2]*allevents)[expends]
+	return(callevents-c(0,callevents[-nexp]))
+}
+
+# Find the experiments for which a probe is above threshold (added by AK).
+ my.exps.above.thresh<-function(short.table,indx,thresh){
+	mysegs<-short.table[where.are.we(indx,short.table),]
+	return(mysegs[mysegs[,1]>thresh,3])
+}
+
+# Find the experiments for which a probe is below threshold (added by AK).
+ my.exps.below.thresh<-function(short.table,indx,thresh){
+	mysegs<-short.table[where.are.we(indx,short.table),]
+	return(mysegs[mysegs[,1]<thresh,3])
+}
+
+# Find the experiments for which a probe is outside a band (added by AK).
+ my.exps.outside.band<-function(short.table,indx,center,halfwidth){
+	mysegs<-short.table[where.are.we(indx,short.table),]
+	return(mysegs[mysegs[,1]>(center+halfwidth) | mysegs[,1]<(center-halfwidth),3])
+}
+
+# Determine how many times a probe in a long table is above threshold (added by AK).
+my.times.above.thresh<-function(short.table,indx,thresh){
+	return(length(which(short.table[where.are.we(indx,short.table),1]>thresh)))
+}
+
+# Determine how many times a probe in a long table is below threshold (added by AK).
+my.times.below.thresh<-function(short.table,indx,thresh){
+	return(length(which(short.table[where.are.we(indx,short.table),1]<thresh)))
+}
+
+# Determine how many times a probe in a long table is outside a band (added by AK).
+my.times.outside.band<-function(short.table,indx,center,halfwidth){
+	return(length(which(short.table[where.are.we(indx,short.table),1]>(center+halfwidth) | short.table[where.are.we(indx,short.table),1]<(center-halfwidth))))
+}
+
+# Determine how many times a probe in a long table is part of a local maximum above threshold (added by AK)
+my.times.as.a.peak<-function(short.table,indx,thresh,boundaries=NULL,mask=NULL){
+	if(length(mask)==0)return(length(which(have.we.a.peak(indx,short.table,thresh,"amp",boundaries=boundaries))))
+	else return(length(which(have.we.a.peak(indx,short.table,thresh,"amp",boundaries=boundaries)) & mask[where.are.we(indx,short.table)]))
+}
+	
+# Determine how many times a probe in a long table is part of a local minimum below threshold (added by AK)
+my.times.as.a.valley<-function(short.table,indx,thresh,boundaries=NULL,mask=NULL){
+	if(length(mask)==0)return(length(which(have.we.a.peak(indx,short.table,thresh,"del",boundaries=boundaries))))
+	else return(length(which(have.we.a.peak(indx,short.table,thresh,"del",boundaries=boundaries)) & mask[where.are.we(indx,short.table)]))
+}
+
+# For the segments in a flat list, determine how many times each is above threshold (added by AK).
+seg.times.above.thresh<-function(short.table,thresh,boundaries=NULL){
+	mysegs<-all.segends(short.table,boundaries)
+	return(sapply(mysegs,my.times.above.thresh,short.table=short.table,thresh=thresh))
+}
+
+# For the segments in a flat list, determine how many times each is below threshold (added by AK).
+seg.times.below.thresh<-function(short.table,thresh,boundaries=NULL){
+	mysegs<-all.segends(short.table,boundaries)
+	return(sapply(mysegs,my.times.below.thresh,short.table=short.table,thresh=thresh))
+}
+
+# For the segments in a flat list, determine how many times each is outside a band (added by AK).
+seg.times.outside.band<-function(short.table,center,halfwidth,boundaries=NULL){
+	mysegs<-all.segends(short.table,boundaries)
+	return(sapply(mysegs,my.times.outside.band,short.table=short.table,center=center,halfwidth=halfwidth))
+}
+
+# For the segments in a flat list, determine how many times each is at a peak above threshold (added by AK).
+seg.times.as.a.peak<-function(short.table,thresh,boundaries=NULL){
+	return(sapply(all.segends(short.table,boundaries),my.times.as.a.peak,short.table=short.table,thresh=thresh,boundaries=boundaries))
+}
+
+# For the segments in a flat list, determine how many times each is at a valley below threshold (added by AK).
+seg.times.as.a.valley<-function(short.table,thresh,boundaries=NULL){
+	return(sapply(all.segends(short.table,boundaries),my.times.as.a.valley,short.table=short.table,thresh=thresh,boundaries=boundaries))
+}
+
+# Transform a function of flat-list segment indices to a function of long-table indices (added by AK).
+expand.segs<-function(anything,segends){
+	segbegs<-c(1,segends[-length(segends)]+1)
+	segflag<-rep(0,segends[length(segends)])
+	segflag[segbegs]<-1
+	return(anything[cumsum(segflag)])
+}
+
+# Given  a short table and a truth vector the same length as the number of rows in the table, divide the genome into blocks (e.g., chromosomes)
+# and determine the number of truth counts for each block and each experiment (added by AK).
+block.counts<-function(short.table,trvec,boundaries=NULL){
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	if(length(boundaries)==0)boundaries<-nprobes
+	bends<-chromos.in.shorty.ends(short.table,boundaries)
+	bunique<-bends+(short.table[,3]-1)*length(boundaries)
+	bright<-bunique-c(bunique[-1],0)!=0
+	bsum<-cumsum(trvec)[bright]
+	counts<-bsum-c(0,bsum[-length(bsum)])
+	bunique<-bunique[bright]
+	cvec<-rep(0,length(boundaries)*max(short.table[,3]))
+	cvec[bunique]<-counts
+	#allright<-(cumsum(short.table[,2])-1)%%nprobes+1 #right end positions of all segments
+	#ballright<-is.element(allright,boundaries)
+	#bexp<-short.table[ballright,3]
+	#trblock<-cumsum(trvec)[ballright]-c(0,cumsum(trvec)[ballright][-sum(ballright)])
+	#bmatch<-match(allright[ballright],boundaries)
+	cmat<-matrix(ncol=max(short.table[,3]),nrow=length(boundaries),data=cvec)
+	#cmat[bexp,bmatch]<-trblock
+	return(t(cmat))
+}
+	
+	
+
+# Given a short table, determine the number of discontinuities for each probe. Return positions and discontinuity counts for the probes where 
+# these counts are nonzero (added by AK). 
+jump.stats.from.shorty<-function(short.table,thresh,boundaries=NULL,logs=T){
+	alljumps<-jumps.in.shorty(short.table,thresh,boundaries=boundaries,logs=logs)
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	#allright<-(cumsum(short.table[,2])-1)%%nprobes+1
+	allright<-((cumsum(short.table[,2])-1)%%nprobes+1)[alljumps]
+	#cumjumps<-cumsum(alljumps[order(allright)])
+	allright<-sort(allright)
+	uright<-unique(allright)
+	muright<-match(uright,allright)
+	muright<-c(muright[-1]-1,length(allright))
+	return(cbind(uright,muright-c(0,muright[-length(muright)])))
+	#return(cbind(uright,cumjumps[muright]-c(0,cumjumps[muright][-length(muright)])))
+}
+
+# Find all the probes with discontinuities in the interior and form clusters with a gap no larger than a given size allowed in a cluster.
+# Return the beginning and the end of each cluster and the break counts within each cluster (added by AK).
+jump.clusters<-function(short.table,thresh,gap=1,boundaries=NULL,logs=T){
+	#alljumps<-jumps.in.shorty(short.table,thresh,boundaries=boundaries,logs=logs)
+	jst<-jump.stats.from.shorty(short.table,thresh,boundaries=boundaries,logs=logs)
+	indi<-c(rep(0,nrow(jst)),rep(1,length(boundaries)))[order(c(jst[,1],boundaries))]
+	mychr<-(cumsum(indi)+1)[indi==0]
+	clustarts<-jst[,1]-c(0,jst[-nrow(jst),1])>gap | mychr-c(0,mychr[-length(mychr)])!=0
+	clustends<-c(clustarts[-1],TRUE)
+	myclust<-cumsum(clustarts)
+	cumjumps<-cumsum(jst[,2])[clustends]
+	jclust<-cumjumps-c(0,cumjumps[-length(cumjumps)])
+	ret<-cbind(jst[clustarts,1],jst[clustends,1],jclust)
+	dimnames(ret)[[2]]<-c("start","end","count")
+	#return(cbind(jst[clustarts,1],jst[clustends,1],jclust))
+	return(ret)
+}
+
+# Given  a short table, form clusters of discontinuities in the interior, allowing gaps up to a maximal size within a cluster. Form a table
+# indicating the presence of a discontinuity in a given cluster for a given experiment. Discard clusters with a small number of experiments 
+# involved. For the remaining clusters return a list of cluster boundaries and covariance matrix (added by AK). 
+jump.cluster.corrs<-function(short.table,thresh,mincount=1,gap=1,boundaries=NULL,logs=T){
+	jc<-jump.clusters(short.table,thresh,gap=gap,boundaries=boundaries,logs=logs)
+	jc<-jc[jc[,3]>=mincount,]
+	alljumps<-jumps.in.shorty(short.table,thresh,boundaries=boundaries,logs=logs)
+	clends<-sort(as.vector(t(sapply(jc[,2],where.are.we,short.table=short.table))))
+	extras<-sort(as.vector(t(sapply(jc[,2]+1,where.are.we,short.table=short.table))))
+	clstarts<-sort(as.vector(t(sapply(jc[,1],where.are.we,short.table=short.table))))
+	ncl<-nrow(jc)
+	nexp<-short.table[nrow(short.table),3]
+	presence<-matrix(data=(cumsum(alljumps)[clends]-cumsum(alljumps)[clstarts]+alljumps[clstarts]-alljumps[clends])>0|(alljumps[clends]&(clends!=extras)),
+				nrow=ncl,ncol=nexp)
+	retain<-rowSums(presence)>=mincount
+	presence<-presence[retain,]
+	#return(list(jc[retain,],apply(presence,1,ftpvmat,x=presence),apply(presence,1,ftorvmat,x=presence))) # Fisher's exact test
+	return(list(jc[retain,],presence%*%t(presence))) # coincidence counts
+}
+
+ftpv<-function(x,y){return(fisher.test(x,y)$p.value)} # x and y are vectors
+ftor<-function(x,y){return(fisher.test(x,y)$estimate)} # x and y are vectors
+ftpvmat<-function(y,x){return(apply(x,1,ftpv,y=y))} # x is a matrix, y is a vector
+ftorvmat<-function(y,x){return(apply(x,1,ftor,y=y))}  # x is a matrix, y is a vector
+			
+# Given a short table, return the correlation of presence of discontinuities for every pair of probes with nonzero discontinuity counts
+# (added by AK).
+jcorr.from.shorty<-function(short.table,thresh,boundaries=NULL,logs=T){
+	alljumps<-jumps.in.shorty(short.table,thresh,boundaries=boundaries,logs=logs)
+	expnos<-short.table[alljumps,3]
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	jumpends<-((cumsum(short.table[,2])-1)%%nprobes+1)[alljumps]
+	ujumpends<-sort(unique(jumpends))
+	jumpos<-match(jumpends,ujumpends)
+	jmax<-length(ujumpends)
+	expmax<-max(short.table[,3])
+	jvec<-rep(0,expmax*jmax)
+	flatno<-expnos+expmax*(jumpos-1)
+	jvec[flatno]<-1
+	jmat<-matrix(data=jvec,nrow=expmax,ncol=jmax)
+	jmat<-jmat[,colSums(jmat)>=2]
+	#return(jmat)
+	#return(cov(jmat))
+	return(t(jmat) %*% jmat)
+}
+
+# Given a short table, determine the probe-wise firestorm index summed over the set. Also return positions and discontinuity counts for the probes where 
+# these counts are nonzero (added by AK). 
+firestorm.stats.from.shorty<-function(short.table,thresh,boundaries=NULL,logs=T){
+	alljumps<-jumps.in.shorty(short.table,thresh,boundaries=boundaries,logs=logs)
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	allright<-((cumsum(short.table[,2])-1)%%nprobes+1)[alljumps] #all the end probes with discontinuities above threshold
+	fsiloc<-2/(short.table[alljumps,2]+short.table[which(alljumps)+1,2])
+	fsiloc<-fsiloc[order(allright)]
+	allright<-sort(allright)
+	uright<-unique(allright)
+	muright<-match(uright,allright)
+	muright<-c(muright[-1]-1,length(allright))
+	fsiloc<-cumsum(fsiloc)[muright]
+	nexp<-max(short.table[,3])
+	return(cbind(uright,(muright-c(0,muright[-length(muright)]))/nexp,(fsiloc-c(0,fsiloc[-length(fsiloc)]))/nexp))
+}
+	
+
+# Given a short table, determine the number of event centers of a given type for each probe. 
+# Return positions and center counts for the probes where 
+# these counts are nonzero (added by AK). 
+center.stats.from.shorty<-function(short.table,thresh,lesion,type,boundaries=NULL, endpoints=T){
+	if(type=="events")alllesions<-events.in.shorty(short.table,thresh,lesion,boundaries=boundaries)
+	if(type=="peaks")alllesions<-peaks.in.shorty(short.table,thresh,lesion,boundaries=boundaries,endpoints=endpoints)
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	allcenter<-as.integer((cumsum(short.table[,2])-1)%%nprobes+1-0.5*(short.table[,2]-1))[alllesions]
+	allcenter<-sort(allcenter)
+	ucenter<-unique(allcenter)
+	mucenter<-match(ucenter,allcenter)
+	mucenter<-c(mucenter[-1]-1,length(allcenter))
+	return(cbind(ucenter,mucenter-c(0,mucenter[-length(mucenter)])))
+}
+
+# Given a short table, determine the number of discontinuities of a given type for each probe. Return positions and discontinuity counts for the probes where 
+# these counts are nonzero (added by AK). 
+evbound.stats.from.shorty<-function(short.table,thresh,lesion,dir,boundaries=NULL,logs=T){
+	alljumps<-evbounds.in.shorty(short.table,thresh,lesion,dir,boundaries=boundaries,logs=logs)
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	allright<-((cumsum(short.table[,2])-1)%%nprobes+1)[alljumps]
+	allright<-sort(allright)
+	uright<-unique(allright)
+	muright<-match(uright,allright)
+	muright<-c(muright[-1]-1,length(allright))
+	return(cbind(uright,muright-c(0,muright[-length(muright)])))
+}
+
+# Given a short table, determine the number of discontinuities of a given type for each probe. Return positions and discontinuity counts for the probes where 
+# these counts are nonzero (added by AK). 
+evbound.mag.stats.from.shorty<-function(short.table,lesion,dir,boundaries=NULL,logs=T){
+	alljumps<-evbound.mags.in.shorty(short.table,lesion,boundaries=boundaries,logs=logs)
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	if(dir=="up"){
+		allright<-((cumsum(short.table[,2])-1)%%nprobes+1)[alljumps>0]
+		alljumps<-cumsum(alljumps[alljumps>0][order(allright)])}
+	if(dir=="down"){
+		allright<-((cumsum(short.table[,2])-1)%%nprobes+1)[alljumps<0]
+		alljumps<-cumsum(alljumps[alljumps<0][order(allright)])}
+	allright<-sort(allright)
+	uright<-unique(allright)
+	muright<-match(uright,allright)
+	muright<-c(muright[-1]-1,length(allright))
+	alljumps<-alljumps[muright]
+	return(cbind(uright,alljumps-c(0,alljumps[-length(muright)])))
+}
+
+
+# Find a minimal set of pinning probes for the amplified/deleted regions using a greedy algorithm (added by AK).
+minset<-function(short.table,thresh,lesion){
+	flip<-ifelse(lesion=="amp",1,-1)
+	probeset<-matrix(nrow=4,ncol=0)
+	tmp<-short.table
+	tmp[,1]<-tmp[,1] * flip
+	thresh<-thresh*flip
+	while(max(tmp[,1])>thresh){
+		segends<-all.segends(tmp)
+		segbegs<-c(1,segends[-length(segends)]+1)
+		segcenters<-(segbegs+segends)%/%2
+		segtimes<-seg.times.above.thresh(tmp,thresh)
+		segtop<-rev(order(segtimes))[1]
+		tmp[where.are.we(segcenters[segtop],tmp),1]<-min(1,thresh)
+		probeset<-cbind(probeset,c(segbegs[segtop],segcenters[segtop],segends[segtop],segtimes[segtop]))
+		print(c(ncol(probeset),probeset[,ncol(probeset)]))
+	}
+	return(probeset)
+}
+
+# Find a minimal set of pinning probes for the amplified/deleted regions using a greedy algorithm (added by AK). IT LIKELY HAS A BUG! DO NOT USE!
+minset.extremum<-function(short.table,thresh,lesion,boundaries=NULL){
+	flip<-ifelse(lesion=="amp",1,-1)
+	probeset<-matrix(nrow=5,ncol=0)
+	#dimnames(probeset)<-list(c("begin","center","end","times","orig times"),NULL)
+	tmp<-short.table
+	tmp[,1]<-tmp[,1] * flip
+	thresh<-thresh*flip
+	while(max(tmp[,1])>thresh){
+		segends<-all.segends(tmp)
+		segbegs<-c(1,segends[-length(segends)]+1)
+		segcenters<-(segbegs+segends)%/%2
+		segtimes<-seg.times.as.a.peak(tmp,thresh,boundaries=boundaries)
+		segtop<-rev(order(segtimes))[1]
+		orig.times<-ifelse(lesion=="amp",my.times.as.a.peak(short.table,segcenters[segtop],thresh,boundaries=boundaries),
+						my.times.as.a.valley(short.table,segcenters[segtop],(-thresh),boundaries=boundaries))
+		tmp[where.are.we(segcenters[segtop],tmp),1]<-thresh-0.0001
+		probeset<-cbind(probeset,c(segbegs[segtop],segcenters[segtop],segends[segtop],segtimes[segtop],orig.times))
+		dimnames(probeset)<-list(c("begin","center","end","times","orig times"),NULL)
+		print(c(ncol(probeset),probeset[,ncol(probeset)]))
+		if(segtimes[segtop]==0)break
+	}
+	return(t(probeset))
+}
+
+# Given two vectors of equal length, representing left and right endpoints of segments, 
+# determine which fraction of these segments covers a given position (added by AK). 
+gene.coverage<-function(genepos,left,right){
+	if(length(left)!=length(right)){
+		cat("Unequal numbers of start and end points in gene.coverage\n")
+		return()}
+	return(sum(genepos>=left & genepos<=right)/length(left))
+}
+
+# Find a minimal set of pinning probes for peaks/valleys using a greedy algorithm (added by AK). Runs infinitely faster than the one above and hopefully
+# is bug-free. endpoints selects a rule for counting extrema at chromosome boundaries. If endpoints=T, these are counted (added by AK).
+pin.extreme.segments<-function(short.table,thresh,lesion,endpoints=T,boundaries=NULL,maxlen=1000000,genepos=NULL){
+	allpeaks<-peaks.in.shorty(short.table,thresh,lesion,endpoints=endpoints,boundaries=boundaries)
+	allpeaks<-allpeaks & short.table[,2]<=maxlen
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	nprobes<-sum(short.table[short.table[,3]==1,2])
+	tmpeaks<-allpeaks
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	allright<-(cumsum(short.table[,2])-1)%%nprobes+1
+	allrightflat<-matrix(allright[flat],nrow=nrf,ncol=ncf)
+	allleft<-c(1,(allright[-length(allright)]+1)%%nprobes)
+	allleftflat<-matrix(allleft[flat],nrow=nrf,ncol=ncf)
+	result<-matrix(nrow=17+length(genepos),ncol=0)
+	while(sum(tmpeaks)>0){
+		peakflat<-matrix(tmpeaks[flat],nrow=nrf,ncol=ncf)
+		speakflat<-colSums(peakflat)
+		msp<-max(speakflat)
+		topseg<-which(speakflat==msp)[1]
+		#if(length(which(speakflat==msp))==1)topseg<-which(speakflat==msp)
+		#else topseg<-sample(which(speakflat==msp),size=1)
+		myend<-allsegs[topseg]
+		if(topseg==1)mystart<-1
+		else mystart<-allsegs[topseg-1]+1
+		mycenter<-(mystart+myend)%/%2
+		orig<-sum(allpeaks[flat[,topseg]])
+		rightquantile<-as.integer(quantile(allrightflat[peakflat[,topseg],topseg])+0.5)
+		leftquantile<-as.integer(quantile(allleftflat[peakflat[,topseg],topseg])+0.5)
+		rightpeakedges<-allrightflat[peakflat[,topseg],topseg]
+		leftpeakedges<-allleftflat[peakflat[,topseg],topseg]
+		minrightleaning<-min(rightpeakedges[(leftpeakedges+rightpeakedges)>=(mystart+myend)])
+		maxleftleaning<-max(leftpeakedges[(leftpeakedges+rightpeakedges)<=(mystart+myend)])
+		if(length(genepos)>0){
+			genefrac<-sapply(genepos,gene.coverage,left=leftpeakedges,right=rightpeakedges)
+			result<-cbind(result,c(mystart,mycenter,myend,leftquantile,rightquantile,maxleftleaning,minrightleaning,msp,orig,genefrac))}
+		else result<-cbind(result,c(mystart,mycenter,myend,leftquantile,rightquantile,maxleftleaning,minrightleaning,msp,orig))
+		tmpeaks[flat[,topseg]]<-F	
+	}
+	return(result)
+}
+
+# Find a minimal set of pinning probes for the amplified/deleted regions using a greedy algorithm. Works just as the function for peaks above (added by AK).  
+pin.all.events<-function(short.table,thresh,lesion,boundaries=NULL){
+	if(lesion<-"amp")allpeaks<-(short.table[,1]>thresh)
+	else allpeaks<-(short.table[,1]<thresh)
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	tmpeaks<-allpeaks
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	result<-matrix(nrow=5,ncol=0)
+	while(sum(tmpeaks)>0){
+		peakflat<-matrix(tmpeaks[flat],nrow=nrf,ncol=ncf)
+		speakflat<-colSums(peakflat)
+		msp<-max(speakflat)
+		topseg<-which(speakflat==msp)[1]
+		myend<-allsegs[topseg]
+		if(topseg==1)mystart<-1
+		else mystart<-allsegs[topseg-1]+1
+		mycenter<-(mystart+myend)%/%2
+		orig<-sum(allpeaks[flat[,topseg]])
+		result<-cbind(result,c(mystart,mycenter,myend,msp,orig))
+		tmpeaks[flat[,topseg]]<-F	
+	}
+	return(result)
+}
+
+# Find a minimal set of pinning probes for the quiet regions using a greedy algorithm. Works just as the function for peaks above (added by AK).  
+pin.all.nonevents<-function(short.table,lower.thresh,upper.thresh,boundaries=NULL){
+	allpeaks<-(short.table[,1]>lower.thresh & short.table[,1]<upper.thresh)
+	allsegs<-all.segends(short.table,boundaries=boundaries)
+	flat<-flat.to.shorty(allsegs,short.table)
+	tmpeaks<-allpeaks
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	result<-matrix(nrow=5,ncol=0)
+	while(sum(tmpeaks)>0){
+		peakflat<-matrix(tmpeaks[flat],nrow=nrf,ncol=ncf)
+		speakflat<-colSums(peakflat)
+		msp<-max(speakflat)
+		topseg<-which(speakflat==msp)[1]
+		myend<-allsegs[topseg]
+		if(topseg==1)mystart<-1 
+		else mystart<-allsegs[topseg-1]+1
+		mycenter<-(mystart+myend)%/%2
+		orig<-sum(allpeaks[flat[,topseg]])
+		result<-cbind(result,c(mystart,mycenter,myend,msp,orig))
+		tmpeaks[flat[,topseg]]<-F	
+	}
+	return(result)
+}
+
+# Find a minimal set of experiment pinning probes for peaks/valleys using a greedy algorithm (added by AK). 
+# If endpoints=T, these are counted.
+pin.extreme.segments.by.exp<-function(short.table,thresh,lesion,endpoints=T,boundaries=NULL){
+	tmpshort<-short.table
+	allpeaks<-peaks.in.shorty(tmpshort,thresh,lesion,endpoints=endpoints,boundaries=boundaries)
+	result<-matrix(nrow=0,ncol=4)
+	while(sum(allpeaks)>0){
+		allsegs<-all.segends(tmpshort,boundaries=boundaries)
+		flat<-flat.to.shorty(allsegs,tmpshort)
+		nrf<-nrow(flat)
+		ncf<-ncol(flat)
+		peakflat<-matrix(allpeaks[flat],nrow=nrf,ncol=ncf)
+		speakflat<-colSums(peakflat)
+		msp<-max(speakflat)
+		topseg<-which(speakflat==msp)[1]
+		myend<-allsegs[topseg]
+		if(topseg==1)mystart<-1
+		else mystart<-allsegs[topseg-1]+1
+		mycenter<-(mystart+myend)%/%2
+		result<-rbind(result,t(c(mystart,mycenter,myend,msp)))
+		remainder<-!is.element(tmpshort[,3],which(peakflat[,topseg]))
+		if(sum(remainder)>0){
+			tmpshort<-tmpshort[remainder,]
+			tmpshort<-repair.shorty(tmpshort)
+			allpeaks<-peaks.in.shorty(tmpshort,thresh,lesion,endpoints=endpoints,boundaries=boundaries)
+		}
+	}
+	dimnames(result)<-list(NULL,c("begin","center","end","count"))
+	return(result)
+}
+
+# Find a minimal set of pinning probes for a given type of a lesion for experiments using a greedy algorithm (added by AK).
+minset.exp<-function(short.table,thresh,lesion){
+	flip<-ifelse(lesion=="amp",1,-1)
+	probeset<-matrix(nrow=7,ncol=0)
+	tmp<-short.table
+	tmp<-repair.shorty(tmp)
+	remaining<-tmp[nrow(tmp),3]
+	tmp[,1]<-tmp[,1] * flip
+	thresh<-thresh*flip
+	while(remaining>0){
+		print(nrow(tmp))
+		tmp<-repair.shorty(tmp)
+		segends<-all.segends(tmp)
+		segbegs<-c(1,segends[-length(segends)]+1)
+		segcenters<-(segbegs+segends)%/%2
+		segtimes<-seg.times.above.thresh(tmp,thresh)
+		segtop<-rev(order(segtimes))[1]
+		pinned.exps<-my.exps.above.thresh(tmp,segcenters[segtop],thresh)
+		npin<-length(pinned.exps)
+		frac<-npin/tmp[nrow(tmp),3]
+		orig.times<-ifelse(lesion=="amp",my.times.above.thresh(short.table,segcenters[segtop],thresh),my.times.below.thresh(short.table,segcenters[segtop],(-thresh)))
+		orig.frac<-orig.times/short.table[nrow(short.table),3]
+		tmp<-tmp[!(is.element(tmp[,3],pinned.exps)),]
+		if(npin==0)break
+		probeset<-cbind(probeset,c(segbegs[segtop],segcenters[segtop],segends[segtop],npin,orig.times,frac,orig.frac))
+		remaining<-remaining-npin
+		print(c(segcenters[segtop],npin))
+	}
+	row.names(probeset)<-c("begin","center","end","times","orig times","fraction","orig fraction")
+	return(t(probeset))
+}
+
+# Find a minimal set of pinning probes for both lesion types for experiments using a greedy algorithm (added by AK).
+minset.band.exp<-function(short.table,center,halfwidth){
+	probeset<-matrix(nrow=9,ncol=0)
+	tmp<-repair.shorty(short.table)
+	remaining<-tmp[nrow(tmp),3]
+	while(remaining>0){
+		print(nrow(tmp))
+		tmp<-repair.shorty(tmp)
+		segends<-all.segends(tmp)
+		segbegs<-c(1,segends[-length(segends)]+1)
+		segcenters<-(segbegs+segends)%/%2
+		segtimes<-seg.times.outside.band(tmp,center,halfwidth)
+		segtop<-rev(order(segtimes))[1]
+		pinned.exps<-my.exps.outside.band(tmp,segcenters[segtop],center,halfwidth)
+		times.above<-my.times.above.thresh(tmp,segcenters[segtop],(center+halfwidth))
+		orig.times.above<-my.times.above.thresh(short.table,segcenters[segtop],(center+halfwidth))
+		orig.times.below<-my.times.below.thresh(short.table,segcenters[segtop],(center-halfwidth))
+		orig.times<-orig.times.above+orig.times.below
+		npin<-length(pinned.exps)
+		tmp<-tmp[!(is.element(tmp[,3],pinned.exps)),]
+		if(npin==0)break
+		probeset<-cbind(probeset,c(segbegs[segtop],segcenters[segtop],segends[segtop],times.above,npin-times.above,npin,orig.times.above,orig.times.below,orig.times))
+		remaining<-remaining-npin
+		print(c(segcenters[segtop],npin))
+	}
+	row.names(probeset)<-c("begin","center","end","times above","times below","total events","orig times above","orig times below","orig total events")
+	return(t(probeset))
+}
+
+# Find a minimal set of pinning probes for a given type of a lesion for experiments using a greedy algorithm and being at an extremum as a criterion (added by AK).
+pin.exps.at.an.extremum<-function(short.table,thresh,lesion,boundaries=NULL){
+	flip<-ifelse(lesion=="amp",1,-1)
+	probeset<-matrix(nrow=7,ncol=0)
+	tmp<-short.table
+	tmp<-repair.shorty(tmp)
+	remaining<-tmp[nrow(tmp),3]
+	tmp[,1]<-tmp[,1] * flip
+	thresh<-thresh*flip
+	while(remaining>0){
+		print(nrow(tmp))
+		tmp<-repair.shorty(tmp)
+		segends<-all.segends(tmp)
+		segbegs<-c(1,segends[-length(segends)]+1)
+		segcenters<-(segbegs+segends)%/%2
+		segtimes<-seg.times.as.a.peak(tmp,thresh)
+		segtop<-rev(order(segtimes))[1]
+		pinned.exps<-which(have.we.a.peak(segcenters[segtop],tmp,thresh,"amp",boundaries=boundaries))
+		npin<-length(pinned.exps)
+		frac<-npin/tmp[nrow(tmp),3]
+		orig.times<-ifelse(lesion=="amp",my.times.as.a.peak(short.table,segcenters[segtop],thresh,boundaries=boundaries),
+						my.times.as.a.valley(short.table,segcenters[segtop],(-thresh),boundaries=boundaries))
+		orig.frac<-orig.times/short.table[nrow(short.table),3]
+		tmp<-tmp[!(is.element(tmp[,3],pinned.exps)),]
+		probeset<-cbind(probeset,c(segbegs[segtop],segcenters[segtop],segends[segtop],npin,orig.times,frac,orig.frac))
+		if(npin==0)break
+		remaining<-remaining-npin
+		print(c(segcenters[segtop],npin))
+	}
+	dimnames(probeset)<-list(c("begin","center","end","times","orig times","fraction","orig fraction"),NULL)
+	return(t(probeset))
+}
+
+# Find a minimal set of pinning probes for either type of a lesion for experiments using a greedy algorithm (added by AK).
+minset.exp.or<-function(short.table,center,halfwidth){
+	probeset<-matrix(nrow=8,ncol=0)
+	tmp<-short.table
+	tmp<-repair.shorty(tmp)
+	remaining<-tmp[nrow(tmp),3]
+	while(remaining>0){
+		print(nrow(tmp))
+		tmp<-repair.shorty(tmp)
+		segends<-all.segends(tmp)
+		segbegs<-c(1,segends[-length(segends)]+1)
+		segcenters<-(segbegs+segends)%/%2
+		segtimes.amp<-seg.times.above.thresh(tmp,center+halfwidth)
+		segtop.amp<-rev(order(segtimes.amp))[1]
+		print("amps ")
+		print(segtimes.amp[segtop.amp])
+		segtimes.del<-seg.times.below.thresh(tmp,center-halfwidth)
+		segtop.del<-rev(order(segtimes.del))[1]
+		print("dels ")
+		print(segtimes.del[segtop.del])
+		lesion<-ifelse(segtimes.amp[segtop.amp]>segtimes.del[segtop.del],1,-1)
+		print("lesion ")
+		print(lesion)
+		segtop<-ifelse(lesion==1,segtop.amp,segtop.del)
+		npin<-max(segtimes.amp[segtop.amp],segtimes.del[segtop.del])
+		if(npin==0)break
+		#pinned.exps<-ifelse(lesion==1,my.exps.above.thresh(tmp,segcenters[segtop],center+halfwidth),my.exps.below.thresh(tmp,segcenters[segtop],center-halfwidth))
+		if(lesion==1)pinned.exps<-my.exps.above.thresh(tmp,segcenters[segtop],center+halfwidth)
+		else pinned.exps<-my.exps.below.thresh(tmp,segcenters[segtop],center-halfwidth)
+		#npin<-length(pinned.exps)
+		#if(npin==0)break
+		frac<-npin/tmp[nrow(tmp),3]
+		orig.times<-ifelse(lesion==1,my.times.above.thresh(short.table,segcenters[segtop],center+halfwidth),my.times.below.thresh(short.table,segcenters[segtop],center-halfwidth))
+		orig.frac<-orig.times/short.table[nrow(short.table),3]
+		tmp<-tmp[!(is.element(tmp[,3],pinned.exps)),]
+		probeset<-cbind(probeset,c(segbegs[segtop],segcenters[segtop],segends[segtop],lesion,npin,orig.times,frac,orig.frac))
+		remaining<-remaining-npin
+		print(c(segcenters[segtop],npin))
+	}
+	row.names(probeset)<-c("begin","center","end","lesion","times","orig times","fraction","orig fraction")
+	return(t(probeset))
+}
+
+# Recover the 3rd column of the short table.
+# The original 3rd column is still assumed to be a unique experiment label (added by AK).
+repair.shorty<-function(short.table){
+	short.table[,3]<-cumsum(c(T,short.table[-nrow(short.table),3]!=short.table[-1,3]))
+	return(short.table)
+}
+
+# Determine the number of experiments in the short table, even if the experiment numbers are not ordered or contiguous (added by AK).
+nexp.from.shorty<-function(short.table){
+	tmp<-short.table
+	tmp<-repair.shorty(tmp)
+	return(tmp[nrow(tmp),3])
+}
+
+# A utility used in the next function: return the number of elements of z that are less than x (added by AK).
+belowme<-function(x,z){
+	return(length(which(z<x)))
+}
+
+# Assign chromosome numbers to the segments in a short table using a list of chromosome end indices. I.e., a segment is assigned the number of a chromosome 
+# where it ENDS (added by AK).
+chromos.in.shorty.ends<-function(short.table,chromends){
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	x<-(cumsum(short.table[,2])-1)%%maxind+1
+	return(sapply(x,belowme,z=chromends)+1)
+}
+
+# Assign chromosome numbers to the segments in a short table using a list of chromosome end indices. I.e., a segment is assigned the number of a chromosome 
+# where it STARTS (added by AK).
+chromos.in.shorty.starts<-function(short.table,chromends){
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	x<-c(0,cumsum(short.table[,2])[-nrow(short.table)])%%maxind+1
+	return(sapply(x,belowme,z=chromends)+1)
+}
+
+#for each segment in the short table indicate whether the segment encompasses an entire chromosome
+whole.chromos.in.shorty<-function(short.table,chromends,portion=0.8){
+	mychromos<-chromos.in.shorty.ends(short.table,chromends)
+	chromlengths<-chromends-c(0,chromends[-length(chromends)])
+	return(short.table[,2]>=portion*chromlengths[mychromos])
+} 
+
+# Given  a short table, permute chromosomes between genomes: i.e., my chromosome 1 is traded for chromosome 1 from another genome, etc (added by AK).
+#random.chromos<-function(short.table,chromends,seed=12345){
+#	cends<-chromos.in.shorty.ends(short.table,chromends)
+#	nprobes<-sum(short.table[short.table[,3]==1,2])
+#	cnum<-length(chromends)
+#	nexp<-short.table[nrow(short.table),3]
+#	shuffle<-sample(cnum*nexp)
+#	ordershuffle[short.table[,3]*cnum+cends] 
+
+# Make sure that all the segments in a short table start and end within the same chromosome. The value is the number of segments for which this is not true (added by AK).
+verify.chromo.integrity<-function(short.table,chromends){
+	cs<-chromos.in.shorty.starts(short.table,chromends)
+	ce<-chromos.in.shorty.ends(short.table,chromends)
+	return(sum(cs!=ce))
+}
+
+# Find the line in short.table at which experiment expnum ends (added by AK).
+expend<-function(expnum,short.table){
+	return(max(which(short.table[,3]==expnum)))
+}
+
+# Extract from short table the segments corresponding to chromosomes chfirst through chlast.
+# The value is a short table for these chromosomes only (added by AK).
+chromos.from.shorty<-function(short.table,chromends,chfirst,chlast){
+	chrombegs<-c(1,chromends[-length(chromends)]+1)
+	chstarts<-chromos.in.shorty.starts(short.table,chromends)
+	chends<-chromos.in.shorty.ends(short.table,chromends)
+	bottom<-min(short.table[,3])
+	maxind<-sum(short.table[short.table[,3]==bottom,2])
+	xend<-(cumsum(short.table[,2])-1)%%maxind+1
+	xstart<-c(0,cumsum(short.table[,2])[-nrow(short.table)])%%maxind+1
+	tmpshort<-short.table
+	tmpshort[,2]<-ifelse(chstarts<=chlast & xend > chromends[chlast],tmpshort[,2]+chromends[chlast]-xend,tmpshort[,2])
+	tmpshort[,2]<-ifelse(chends>=chfirst & xstart < chrombegs[chfirst],tmpshort[,2]-chrombegs[chfirst]+xstart,tmpshort[,2])
+	return(tmpshort[chstarts<=chlast & chends>=chfirst,])
+	#nexp<-nexp.from.shorty(short.table)
+	#return(short.table[mychromos>=chfirst & mychromos<=chlast,])
+}
+
+# Merge two short tables. Both are assumed to be data frames if there are more than 3 columns (added by AK).
+merge.shorties<-function(short.table1,short.table2){
+	short.table1<-repair.shorty(short.table1)
+	short.table2<-repair.shorty(short.table2)
+	short.table2[,3]<-short.table2[,3]+short.table1[nrow(short.table1),3]
+	return(rbind(short.table1,short.table2))
+	
+}
+
+#Transform a vector of 0s and +-1s into a vector of 0s (the original 0s and the minority of +-1s) and 1s (the majority of +-1s). Added by AK.
+binarize<-function(z){
+	s<-sign(sum(z))
+	return(ifelse(z==s,1,0))
+}
+
+#Compute a contingency table for 2 vectors of 0s and 1s of equal length (added by AK. Note that the S+ table() does not work in certain cases).
+ctab<-function(z1,z2){
+	mytab<-matrix(nrow=2,ncol=2)
+	mytab[1,1]<-length(which(z1==0 & z2==0))
+	mytab[1,2]<-length(which(z1==0 & z2==1))
+	mytab[2,1]<-length(which(z1==1 & z2==0))
+	mytab[2,2]<-length(which(z1==1 & z2==1))
+   return(mytab)	
+} 
+
+# Perform a chi-square test for association between probes indx1 and indx2 in a long table whose amplifications/deletions are indicated as 1s/-1s in the short
+# stratified table. Return the corresponding p-value (added by AK).   
+test.assoc.chisq<-function(indx1,indx2,strat.table){
+	z1<-binarize(strat.table[where.are.we(indx1,strat.table),1])
+	z2<-binarize(strat.table[where.are.we(indx2,strat.table),1])
+	mytab<-ctab(z1,z2)
+	rs<-rowSums(mytab)
+	cs<-colSums(mytab)
+	total<-sum(rs)
+	exp.counts<-(rs %*% t(cs))/total
+	if(min(apply(exp.counts,2,min))<5)return(1)
+	else return(chisq.test(mytab)$p.value)
+}
+
+# Perform Fisher's exact test for association between probes indx1 and indx2 in a long table whose amplifications/deletions are indicated as 1s/-1s in the short
+# stratified table. Return the corresponding p-value (added by AK).   
+test.assoc.fisher<-function(indx1,indx2,strat.table){
+	z1<-binarize(strat.table[where.are.we(indx1,strat.table),1])
+	z2<-binarize(strat.table[where.are.we(indx2,strat.table),1])
+	mytab<-ctab(z1,z2)
+	return(fisher.test(mytab)$p.value)
+}  
+
+# Perform an entropy test for association between probes indx1 and indx2 in a long table whose amplifications/deletions are indicated as 1s/-1s in the short
+# stratified table. Return the symmetrized dependency (added by AK).   
+test.assoc.entropy<-function(indx1,indx2,strat.table){
+	z1<-binarize(strat.table[where.are.we(indx1,strat.table),1])
+	z2<-binarize(strat.table[where.are.we(indx2,strat.table),1])
+	mytab<-ctab(z1,z2)
+	rs<-rowSums(mytab)
+	cs<-colSums(mytab)
+	total<-sum(rs)
+	rs<-rs/total
+	cs<-cs/total
+	rent<-sum(ifelse(rs>0,-rs*log(rs),0))
+	cent<-sum(ifelse(cs>0,-cs*log(cs),0))
+	mytab<-mytab/total
+	ent<-sum(rowSums(ifelse(mytab>0,-mytab*log(mytab),0)))
+	return(2*(rent+cent-ent)/(rent+cent))
+}
+
+# Perform an entropy test for association between probes indx1 and indx2 in a long table whose amplifications/deletions are indicated as 1s/-1s in the short
+# stratified table. Return the dependency of indx2 on indx1 (added by AK).   
+test.assoc.entdep<-function(indx1,indx2,strat.table){
+	z1<-binarize(strat.table[where.are.we(indx1,strat.table),1])
+	z2<-binarize(strat.table[where.are.we(indx2,strat.table),1])
+	mytab<-ctab(z1,z2)
+	rs<-rowSums(mytab)
+	total<-sum(rs)
+	mytab<-mytab/total
+	rs<-rs/total
+	cs<-colSums(mytab)
+	cent<-sum(ifelse(cs>0,-cs*log(cs),0))
+	rd<-ifelse(rs>0,1/rs,0)
+	rp<-mytab*rd
+	relent<-sum(rowSums(ifelse(rp>0,-mytab*log(rp),0)))
+	if(cent!=0)return(1-relent/cent)
+	else return(0)
+}
+
+# create a new short table by subjecting a short table to a condition (a logical vector whose length must be equal to the number of exps). (added by AK)
+subset.shorty<-function(short.table,condition){
+	if(length(condition)!=short.table[nrow(short.table),3]) {cat("Length mismatch!\n")
+		 return()}
+	short.subset<-short.table[is.element(short.table[,3],which(condition)),]
+	return(repair.shorty(short.subset))
+}
+
+# return a long vector of event frequencies, ready to plot (added by AK).
+ready.to.plot.events<-function(short.table,thresh,lesion,boundaries=NULL){
+	mycounts<-event.count(short.table,thresh,lesion,boundaries=boundaries)
+	mysegs<-all.segends(short.table,boundaries)
+	myexps<-short.table[nrow(short.table),3]
+	mycounts<-mycounts/myexps
+	return(expand.segs(mycounts,mysegs))
+}
+
+# return a long vector of extremum frequencies, ready to plot (added by AK).
+ready.to.plot.extrema<-function(short.table,thresh,lesion,boundaries=NULL,endpoints=T){
+	mycounts<-extreme.count(short.table,thresh,lesion,boundaries=boundaries,endpoints=endpoints)
+	myexps<-short.table[nrow(short.table),3]
+	mycounts<-mycounts/myexps
+	mysegs<-all.segends(short.table,boundaries)
+	return(expand.segs(mycounts,mysegs))
+}
+
+# return a long vector of mean amplitudes, ready to plot (added by AK).
+ready.to.plot.meanamp<-function(short.table,lesion,boundaries=NULL,logs=F){
+	mysegs<-all.segends(short.table,boundaries)
+	myamps<-meanamp(short.table,lesion,boundaries,logs)
+	return(expand.segs(myamps,mysegs))
+}
+
+# Plot a profile by name directly from the short table, assuming that the name is in the 4th column of the table (added by AK)
+plot.name<-function(short.table,name){
+	plot(c(0,cumsum(short.table[short.table[,4]==name,][,2])),c(short.table[short.table[,4]==name,][1,1],short.table[short.table[,4]==name,][,1]),
+		type="S",main=name,xlab="probe number",ylab="log(R)")	
+}
+
+# Prepare data for plotting a profile by name directly from the short table, 
+# assuming that the name is in the 4th column of the table (added by AK).
+ready.to.plot.name<-function(short.table,name){
+	return(cbind(c(0,cumsum(short.table[short.table[,4]==name,][,2])),
+	c(short.table[short.table[,4]==name,][1,1],short.table[short.table[,4]==name,][,1])))
+}
+
+# Make a frequency summary table from a short table. The arguments are
+# short.table; thresh - magnitude threshold; lesion - "amp" or "del"; minfreq - minimal allowed frequency;
+# boundaries - a vector of chromosome ends; ch - a vector of chromosome numbers for every probe;
+# chpos - a vector of chromosome positions for every probe; namecol - a column number in short.table from
+# which to take experiment names 
+# Example: frs<-make.freq.summary(AML.shorty.cl.22,0.1,"amp",0.05,boundaries=chromends.f0504[1:22,1],
+#	ch=chrominfo.f0504[,"CHROM"],chpos=chrominfo.f0504[,"CHROM.POS"],namecol=4)		(added by AK). 
+make.freq.summary<-function(short.table,thresh,lesion,minfreq=0,boundaries,ch,chpos,namecol){
+	zz<-short.table
+	nexp<-short.table[nrow(short.table),3]
+	if(lesion=="amp")zz[,1]<-ifelse(zz[,1]>thresh,zz[,1],0)
+	else zz[,1]<-ifelse(zz[,1]<thresh,zz[,1],0)
+	zz<-simplify.shorty(zz,boundaries=boundaries)
+	allevents<-events.in.shorty(zz,thresh,lesion,boundaries=boundaries)
+	allsegs<-all.segends(zz,boundaries=boundaries)
+	allstarts<-c(1,allsegs[-length(allsegs)]+1)
+	flat<-flat.to.shorty(allsegs,zz)
+	nrf<-nrow(flat)
+	ncf<-ncol(flat)
+	mytab<-t(matrix(allevents[flat],nrow=nrf,ncol=ncf))
+	highcount<-rowSums(mytab)>minfreq*nexp
+	hitsin<-vector(length=nrow(mytab))
+	for(i in 1:nrow(mytab))hitsin[i]<-paste(as.character(unique(zz[,namecol]))[mytab[i,]==1],collapse=" ")
+	mytab<-data.frame(allstarts[highcount],allsegs[highcount],ch[allstarts[highcount]],chpos[allstarts[highcount]],
+	chpos[allsegs[highcount]],rowSums(mytab)[highcount],hitsin[highcount])
+	dimnames(mytab)[[2]]<-c("start","end","chrom.inner","outer.probe.chrom.pos.start","outer.probe.chrom.pos.end","count","hits.in")
+	return(mytab)
+}
+
+#st is a SINGLE-CASE short table, with log-ratio values in the 1st column and 
+#segment lengths in the 2nd; window is a fraction of the genome length
+#between 0 and 1. Order segments by log-ratios and find a window (of size 
+#window or more) where the variation of log ratio is minimal. Return the median 
+#log ratio for that window.   
+window.mode<-function(st,window){
+window<-window*sum(st[,2])
+if(max(st[,2])>=window)return(st[rev(order(st[,2])),1]) #an unlikely case
+else{
+	st<-st[order(st[,1]),] # order the short table by value
+	ptiles<-c(0,cumsum(st[,2]))
+	pdist<-as.matrix(dist(ptiles))
+	lograts<-c(st[1,1],st[,1])
+	rdist<-as.matrix(dist(lograts))
+	these<-(as.matrix(dist(ptiles))>=window)[order(rdist)]
+	j<-col(rdist)[order(rdist)][these][1]
+	i<-row(rdist)[order(rdist)][these][1]
+	imin<-min(i,j)
+	imax<-max(i,j)
+	#return mean
+	#return(sum(ptiles[imin:imax]*lograts[imin:imax])/
+	#	sum(ptiles[imin:imax]))
+	#return median
+	ind<-min(which(cumsum(ptiles[imin:imax])>=(0.5*sum(ptiles[imin:imax]))))
+	return(lograts[imin:imax][ind])
+}
+}
+  
+
+above.thresh<-
+function(short.table,thresh.up,subset=c()){
+	#currently expects linear
+	bt<-proc.time()
+	nrow.final<-sum(short.table[which(short.table[,3]==1),2])
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+	sum.thresh.up<-rep(0,nrow.final)
+	
+	shorty<-short.table
+	shorty[,1]<-1
+	shorty[which(short.table[,1]<thresh.up),1]<-0
+	for (i in subset){
+		shorty.vals<-shorty[which(short.table[,3]==i),1:2]
+#return(shorty.vals)		
+		sum.thresh.up<-sum.thresh.up+decompress(shorty.vals)
+#cat(proc.time()-bt,"\ttime elapsed\n")
+
+	}
+	cat(proc.time()-bt,"\ttime elapsed\n")
+	return(sum.thresh.up)
+
+}
+
+compress<-
+function(val){
+	#makes a short table from a vector
+	len<-length(val)
+	diff<-c(val[1],val[2:len]-val[1:(len-1)])
+#cat(diff,"\t diff\n")	
+	val.diff<-union(1,which(diff!=0))
+	ans<-matrix(0,nrow=length(val.diff),ncol=2)
+	ans[,1]<-val[val.diff]
+	ans[,2]<-c(val.diff[-1],len+1)-val.diff
+	return(ans)
+}
+
+# A more careful version of compression: given a list of boundary positions, make sure that a segment never crosses a boundary, understood to be a starting point of something
+# (added by AK).
+compress.with.care<-function(val,starts=NULL){
+	len<-length(val)
+	diff<-c(val[1],val[2:len]-val[1:(len-1)])
+	val.diff<-union(1,which(diff!=0))
+	val.diff<-unique(sort(c(val.diff,starts)))
+	ans<-matrix(0,nrow=length(val.diff),ncol=2)
+	ans[,1]<-val[val.diff]
+	ans[,2]<-c(val.diff[-1],len+1)-val.diff
+	return(ans)
+}
+
+decompress<-function(short.table){
+	#makes a vector from a short table
+	val<-rep(short.table[,1],times=short.table[,2])
+	return(val)
+}
+
+left.last.value<-
+function(val){
+#cat(length(val),"\t length of val\n")
+	short.table<-compress(val)
+#cat(nrow(short.table),"\t nrow\n")
+	repl<-c(0,short.table[-nrow(short.table),1])
+#cat(length(repl),"\t len repl\n")	
+	short.table[,1]<-repl
+	left.val<-decompress(short.table)
+#cat(length(left.val),"\t length of left.val\n")
+	return(left.val)
+}
+
+
+peak<-
+function(ups, thresh.up=0)
+{
+#llv=last left value
+#llr=last right value
+#find peaks
+	bt <- proc.time()
+	len <- length(ups)
+	ups[which(ups<thresh.up)]<-0
+#cat(len,"\t 1 \n")
+	llv<-left.last.value(ups)
+#cat(length(llv), "\t 2 \n")
+	rlv<-rev(left.last.value(rev(ups)))
+#cat(length(rlv), "\t 3 \n")
+	ans <- rep(0, len)
+	ans <- 1 * (ups > rlv & ups > llv)
+	cat("elapsed time is...\t", proc.time() - bt, "\n")
+	return(ans)
+}
+
+
+peaks.and.valleys<-
+function(val, thresh.up=log(1.111), thresh.down=log(.90))
+{
+#finds peaks and valleys given a vector profile and a threshhold for both peaks and valleys
+	len <- length(val)
+	above <- (val >= thresh.up)
+	below <- (val <= thresh.down)
+	ups <- val * above
+#return(ups)	
+	downs <- -1 * val * below
+	ups <- peak(ups)
+	downs <- -1*peak(downs)
+	return(ups, downs)
+}
+
+find.sum.peaks<-
+function(mat.val,thresh.up,thresh.down)
+{
+	n<-ncol(mat.val)
+	m<-nrow(mat.val)
+	sum.ups<-sum.downs<-rep(0,m)
+	for (i in 1:n){
+		x<-mat.val[,i]
+		y<-peaks.and.valleys(x,thresh.up,thresh.down)
+		sum.ups<-sum.ups+y[[1]]
+		sum.downs<-sum.downs+y[[2]]
+	}
+	return(sum.ups,sum.downs)
+}
+
+get.shorty<-
+function(mat.long){
+	bt<-proc.time()
+	ncols<-ncol(mat.long)
+	short.1<-matrix(0,ncol=3,nrow=10^5)
+	place.current<-0
+		#i hope this is enough rows!!!
+	for (i in 1:ncols){
+		x<-compress(mat.long[,i])
+		len<-nrow(x)
+		range.current<-(place.current+1):(place.current+len)
+		short.1[range.current,1:2]<-x
+		short.1[range.current,3]<-i
+		place.current<-place.current+len
+		cat(proc.time()-bt,"\ttime elapsed\n")		
+	}
+	shorty<-short.1[which(short.1[,3]!=0),]
+	return(shorty)
+}
+
+# A more careful version of get.shorty: given a list of boundary positions (e.g., chromosome or centromere starts), make sure not to
+# cross boundaries, understood to be starts of something (added by AK).
+get.shorty.with.care<-function(mat.long,starts=NULL){
+	bt<-proc.time()
+	ncols<-ncol(mat.long)
+	short.1<-matrix(0,ncol=3,nrow=10^5)
+	place.current<-0
+		#i hope this is enough rows!!!
+	for (i in 1:ncols){
+		x<-compress.with.care(mat.long[,i],starts=starts)
+		len<-nrow(x)
+		range.current<-(place.current+1):(place.current+len)
+		short.1[range.current,1:2]<-x
+		short.1[range.current,3]<-i
+		place.current<-place.current+len
+		cat(proc.time()-bt,"\ttime elapsed\n")		
+	}
+	shorty<-short.1[which(short.1[,3]!=0),]
+	return(shorty)
+}
+
+
+decompress.shorty<-
+function(short.table){
+	bt<-proc.time()
+	nrow.final<-sum(short.table[which(short.table[,3]==1),2])
+#	return(nrow.final)
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	
+#	n.exp<-1
+	
+	long.table<-matrix(0,nrow=nrow.final,ncol=n.exp)
+	
+	for (i in 1:n.exp){
+		long.table[,i]<-decompress(short.table[which(short.table[,3]==i),1:2])
+		cat(i,"\t we are here\n")
+		}
+	cat(proc.time()-bt,"\t time elapsed\n")
+	if(dim(short.table)[[2]]>3)dimnames(long.table)<-list(NULL,as.character(unique(short.table[,4])))
+	return(long.table)
+}
+
+max.vals<-
+function(short.table,subset=c()){
+	bt<-proc.time()
+	nrow.final<-sum(short.table[which(short.table[,3]==1),2])
+#	return(nrow.final)
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+
+#	n.exp<-1
+	
+	max.vector.up<-min.vector.down<-exp.vector<-rep(1,nrow.final)
+	
+	for (i in subset){
+		exp.vector<-decompress(short.table[which(short.table[,3]==i),1:2])
+		max.vector.up<-pmax(max.vector.up,exp.vector)
+		min.vector.down<-pmin(min.vector.down,exp.vector)
+		cat(i,"\t we are here\n")
+		}
+	cat(proc.time()-bt,"\t time elapsed\n")
+	return(max.vector.up,min.vector.down)
+}
+
+sum.up<-
+function(short.table,subset=c()){
+	bt<-proc.time()
+	nrow.final<-sum(short.table[which(short.table[,3]==1),2])
+#	return(nrow.final)
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+
+#	n.exp<-1
+	
+	sum.all.up<-exp.vector<-rep(0,nrow.final)
+	
+	for (i in subset){
+		exp.vector<-decompress(short.table[which(short.table[,3]==i),1:2])-1
+		exp.vector[which(exp.vector<0)]<-0
+		sum.all.up<-sum.all.up+exp.vector
+	}
+	cat(proc.time()-bt,"\t time elapsed\n")
+	return(sum.all.up)
+}
+
+
+peaks.unique<-
+function(vals){
+		#specialized peak assumes all nonzero peaks unique 
+		#and finds nonzero peaks
+	z.vals<-vals
+	z.vals[which(z.vals<0)]<-0
+	x.vals<-c(0,z.vals,0)
+	len<-length(vals)
+
+	peaks<-(z.vals>x.vals[1:len])*(z.vals>x.vals[3:(len+2)])
+#cat(vals,"\n")	
+#cat(x.vals,"\n")
+#cat(z.vals,"\n")
+#cat(x.vals[3:(len+2)],"\n")
+#cat(peaks,"\n")
+	return(peaks)
+}
+
+sum.peaks.from.short<-
+function(short.table,thresh.up,subset=c()){
+	#currently expects linear
+	bt<-proc.time()
+	nrow.final<-sum(short.table[which(short.table[,3]==1),2])
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+	sum.peak.up<-rep(0,nrow.final)
+	
+	shorty<-short.table
+	shorty[which(short.table[,1]<thresh.up),1]<-1
+	for (i in subset){
+		shorty.vals<-shorty[which(short.table[,3]==i),1:2]
+		ups<-peaks.unique(shorty.vals[,1])
+		shorty.vals[,1]<-ups
+#return(shorty.vals)		
+		sum.peak.up<-sum.peak.up+decompress(shorty.vals)
+#cat(proc.time()-bt,"\ttime elapsed\n")
+
+	}
+	cat(proc.time()-bt,"\ttime elapsed\n")
+	return(sum.peak.up)
+}
+
+num.segs<-
+function(short.table,thresh.up=1,subset=c()){
+	#assumes linear data which we convert to log
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+	len<-length(subset)
+	number.segs<-rep(1,len)
+	ij<-0
+	for (i in subset){
+		abs.log.vals<-abs(log(short.table[which(short.table[,3]==i),1]))
+		ij<-ij+1
+		number.segs[ij]<-sum(abs.log.vals>=log(thresh.up))
+	}
+	return(number.segs)
+}
+
+sum.over.mask<-
+function(short.table,mask,subset){
+	#assumes linear data which we convert to log
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+	len<-length(mask)
+	masked.sum<-rep(0,len)
+	for (i in subset){
+		masked.sum<-masked.sum + mask*log(decompress(short.table[which(short.table[,3]==i),1:2])[1:len])
+	}
+	return(masked.sum/length(subset))
+}
+
+dot.prod<-
+function(short.table,masked.val,subset=c()){
+	#assumes linear data which we convert to log
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+	len<-length(masked.val)
+	dot.sum<-rep(0,length(subset))
+	for (i in subset){
+		dot.sum[i]<-sum(masked.val*log(decompress(short.table[which(short.table[,3]==i),1:2])[1:len]))
+	}
+	return(dot.sum)
+
+}
+
+cancer.stats.from.short<-
+function(short.table,thresh.up,thresh.down,subset=c(),suffix=c()){
+	#batch process by subset, thresh.up, and short.table, these long outputs:
+	#all based on log ratios but assuming linear data as input
+	#freq.up, times above thresh.up
+	#sum.up, summation of all values above thresh.up 
+	#freq.nn.sum.up, product of the above two vectors
+	#avg.up, average of values above thresh.up
+	#max.up, maximum displacement
+	#and also by thresh.down
+	
+	bt<-proc.time()
+	nrow.final<-sum(short.table[which(short.table[,3]==1),2])
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+	freq.up<-sum.up<-freq.nn.sum.up<-avg.up<-max.up<-rep(0,nrow.final)
+	freq.down<-sum.down<-freq.nn.sum.down<-avg.down<-max.down<-rep(0,nrow.final)
+	temp<-rep(0,nrow.final)
+	
+	for (i in subset){
+		long.vals<-log(decompress(short.table[which(short.table[,3]==i),1:2]))
+		temp<-long.vals>=thresh.up
+		freq.up<-freq.up+temp
+		sum.up<-sum.up+long.vals*temp
+		max.up<-pmax(max.up,long.vals)
+		
+		temp<-long.vals<=thresh.down
+		freq.down<-freq.down+temp
+		sum.down<-sum.down+long.vals*temp
+		max.down<-pmin(max.down,long.vals)
+	}
+	
+	matters<-which((freq.up*sum.up)>0)
+	avg.up[matters]<-sum.up[matters]/freq.up[matters]
+	sum.up<-sum.up/length(subset)
+	freq.up<-freq.up/length(subset)
+	freq.nn.sum.up<-freq.up*sum.up
+	
+	matters<-which((freq.down*sum.down)<0)
+	avg.down[matters]<-sum.down[matters]/freq.down[matters]
+	sum.down<-sum.down/length(subset)
+	freq.down<--1*freq.down/length(subset)
+	freq.nn.sum.down<--1*freq.down*sum.down
+		
+	dx<-data.frame(
+		freq.up,
+		sum.up,
+		freq.nn.sum.up,
+		avg.up,
+		max.up,
+		freq.down,
+		sum.down,
+		freq.nn.sum.down,
+		avg.down,
+		max.down)
+	dx.names<-c(
+		paste("freq.up",suffix,sep=""),
+		paste("sum.up",suffix,sep=""),
+		paste("freq.nn.sum.up",suffix,sep=""),
+		paste("avg.up",suffix,sep=""),
+		paste("max.up",suffix,sep=""),
+		paste("freq.down",suffix,sep=""),
+		paste("sum.down",suffix,sep=""),
+		paste("freq.nn.sum.down",suffix,sep=""),
+		paste("avg.down",suffix,sep=""),
+		paste("max.down",suffix,sep=""))
+	names(dx)<-dx.names
+	cat(proc.time()-bt,"\ttime elapsed\n")
+	return(dx)
+}
+
+cancer.max.stats.from.short<-
+function(short.table,subset=c(),multiplicity=3){
+		
+	bt<-proc.time()
+	nrow.final<-sum(short.table[which(short.table[,3]==1),2])
+	len<-nrow(short.table)
+	n.exp<-short.table[len,3]
+	if (length(subset)==0){
+		subset<-1:n.exp
+	}
+	
+	mat.max<-matrix(0,ncol=multiplicity+1,nrow=nrow.final)
+	for (i in subset){
+		mat.max[,multiplicity+1]<-log(decompress(short.table[which(short.table[,3]==i),1:2]))
+		mat.max<-swap.row.order(mat.max,multiplicity+1,1:nrow.final)
+	}
+	
+	cat(proc.time()-bt,"\ttime elapsed\n")
+	return(mat.max[,1:multiplicity])
+}
+
+
+swap.row.order<-
+function(mat,target.col,target.rows){
+	
+	swaps<-which(mat[target.rows,target.col-1]<mat[target.rows,target.col])
+	if (length(swaps)==0){
+		return(mat)
+	}
+	mat.temp<-mat[target.rows[swaps],target.col-1]
+	mat[target.rows[swaps],target.col-1]<-mat[target.rows[swaps],target.col]
+	mat[target.rows[swaps],target.col]<-mat.temp
+	if (target.col==2){
+		return(mat)
+	}
+	mat<-swap.row.order(mat,target.col-1,target.rows[swaps])
+}
+
+
