@@ -34,12 +34,14 @@ cnprep_process <- function(standardCopyNumberMap, parallel = TRUE, mclust_model 
       ratinput <- cnprep_input[["ratinput"]]
       
       print(paste0("CNprep: Starting processing for sample: ",  seginput[1, 1])) # TODO: Get sample from list name, not table
+      segtable <- data.frame(stringsAsFactors = FALSE)
       try({
         segtable <- runCNpreprocessing(seginput = seginput, ratinput = ratinput, norminput = norminput, modelNames = mclust_model, minjoin = minjoin, ntrial = ntrial)
         print(paste0("CNprep: Processed sample: ",  seginput[1, 1])) # TODO: Get sample from list name, not table
         return(segtable)
       }) # TODO: Verify exception handling is performed correctly
       print(paste0("CNprep: Sample: ",  seginput[1, 1], " failed!")) # TODO: Get sample from list name, not table
+      return(segtable)
     }))
   }
   return(segtable_binded)
