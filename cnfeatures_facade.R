@@ -17,9 +17,11 @@ run_pipeline <- function(genome = "hg19", targetStrategy = "SLICE"){
   # Run CNprep on Copy Number Profiles
   segtableResults <- runCNprep(standardCopyNumberMapList, parallel = FALSE, mclust_model = "E", minjoin = 0, ntrial = 10)
   
-  
+  amplificationSegments <- NA
+  deletionSegments <- NA
   if(targetStrategy == "SLICE"){
-    runSlicing(segtableResults)
+    amplificationSegments <- runSlicing(segtableResults, probes = TRUE, amplification = TRUE)
+    deletionSegments <- runSlicing(segtableResults, probes = TRUE, amplification = FALSE)
   } else if (targetStrategy == "ISOLATE"){
     
   } else {
