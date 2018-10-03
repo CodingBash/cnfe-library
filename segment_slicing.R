@@ -8,7 +8,7 @@ slice <- function(segtable, probes, amplification){
   jointslices <- sliceHT(segtable)
   
   # Format slices
-  slicesFormatted <- formatSlicingOutput(jointslices, probes, amplification)
+  slicesFormatted <- formatSlicingOutput(jointslices)
   
   # Concatenate slices from all samples with user specifications (unit and slice type)
   slicesResults <- do.call(rbind, lapply(slicesFormatted, function(sampleSlices){

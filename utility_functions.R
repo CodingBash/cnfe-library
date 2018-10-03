@@ -111,7 +111,9 @@ runCNprep <- function(standardCopyNumberMapList, parallel, mclust_model, minjoin
 runSlicing <- function(segtableResults, probes, amplification){
   slicingResults <- lapply(names(segtableResults), function(reference){
     print(paste0("FACADE: Running CNprep for reference: ", reference))
-    sliceResult <- slice(standardCopyNumberMapList[[reference]], probes, amplification)
+    sliceResult <- slice(segtableResults[[reference]], probes, amplification)
     return(sliceResult)
   })
+  names(slicingResults) <- names(segtableResults)
+  return(slicingResults)
 }
