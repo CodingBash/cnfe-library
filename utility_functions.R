@@ -110,10 +110,20 @@ runCNprep <- function(standardCopyNumberMapList, parallel, mclust_model, minjoin
 
 runSlicing <- function(segtableResults, probes, amplification){
   slicingResults <- lapply(names(segtableResults), function(reference){
-    print(paste0("FACADE: Running CNprep for reference: ", reference))
+    print(paste0("FACADE: Running slicing for reference: ", reference))
     sliceResult <- slice(segtableResults[[reference]], probes, amplification)
     return(sliceResult)
   })
   names(slicingResults) <- names(segtableResults)
   return(slicingResults)
+}
+
+runIsolation <- function(segtableResults, criteria_function){
+  isolationResults <- lapply(names(segtableResults), function(reference){
+    print(paste0("FACADE: Running isolation for reference: ", reference))
+    isolationResult <- isolate(segtableResults[[reference]], criteria_function)
+    return(isolationResult)
+  })
+  names(isolationResults) <- names(segtableResults)
+  return(isolationResults)
 }
