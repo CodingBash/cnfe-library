@@ -7,6 +7,7 @@ source("./cn_tool_adapter.R")
 source("./cnprep_processing.R")
 source("./segment_slicing.R")
 source("./isolate_segments.R")
+source("./core_processing.R")
 
 # targetStrategy ("SLICE" | "ISOLATE")
 run_pipeline <- function(genome = "hg19", targetStrategy = "SLICE"){
@@ -32,11 +33,11 @@ run_pipeline <- function(genome = "hg19", targetStrategy = "SLICE"){
       return(result)
     }
     deletion_criteria <- function(segment){
-      result <- segment[["marginalprob"]]  < 0.001 & segment[["mediandev"]] > 0
+      result <- segment[["marginalprob"]]  < 0.001 & segment[["mediandev"]] < 0
       return(result)
     }
     amplificationSegments <- runIsolation(segtableResults, criteria_function = amplification_criteria, probes = TRUE)
-    deletionSegments <- runIsolation(segtableResults, critieraFunction = deletion_criteria, probes = TRUE)
+    deletionSegments <- runIsolation(segtableResults, criteria_function = deletion_criteria, probes = TRUE)
   } else {
     # TODO: Parameter verification should be put at beginning of method
     stop(paste0("targetStrategy not recognized. Accepted inputs: 'SLICE' | 'ISOLATE'. You entered: ", targetStrategy))

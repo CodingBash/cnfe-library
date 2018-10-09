@@ -127,3 +127,13 @@ runIsolation <- function(segtableResults, criteria_function, probes){
   names(isolationResults) <- names(segtableResults)
   return(isolationResults)
 }
+
+runCoreProcess <- function(inputSegmentList){
+  coreResults <- lapply(names(inputSegmentList), function(reference){
+    print(paste0("FACADE: Running core for reference: ", reference))
+    coreResult <- core(inputSegmentList[[reference]])
+    return(coreResult)
+  })
+  names(coreResults) <- names(inputSegmentList)
+  return(coreResults)
+}
