@@ -35,8 +35,8 @@ run_pipeline <- function(genome = "hg19", targetStrategy = "SLICE"){
       result <- segment[["marginalprob"]]  < 0.001 & segment[["mediandev"]] > 0
       return(result)
     }
-    amplificationSegments <- runIsolation(segtableResults, critieraFunction = amplification_criteria)
-    deletionSegments <- runIsolation(segtableResults, critieraFunction = deletion_criteria)
+    amplificationSegments <- runIsolation(segtableResults, criteria_function = amplification_criteria, probes = TRUE)
+    deletionSegments <- runIsolation(segtableResults, critieraFunction = deletion_criteria, probes = TRUE)
   } else {
     # TODO: Parameter verification should be put at beginning of method
     stop(paste0("targetStrategy not recognized. Accepted inputs: 'SLICE' | 'ISOLATE'. You entered: ", targetStrategy))

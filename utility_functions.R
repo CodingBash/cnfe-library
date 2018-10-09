@@ -118,10 +118,10 @@ runSlicing <- function(segtableResults, probes, amplification){
   return(slicingResults)
 }
 
-runIsolation <- function(segtableResults, criteria_function){
+runIsolation <- function(segtableResults, criteria_function, probes){
   isolationResults <- lapply(names(segtableResults), function(reference){
     print(paste0("FACADE: Running isolation for reference: ", reference))
-    isolationResult <- isolate(segtableResults[[reference]], criteria_function)
+    isolationResult <- isolate(segtableResults[[reference]], criteria_function, probes)
     return(isolationResult)
   })
   names(isolationResults) <- names(segtableResults)
